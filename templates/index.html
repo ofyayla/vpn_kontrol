@@ -1,0 +1,1527 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ivanti VPN Kontrol</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #f8fafc;
+            --card-bg: white;
+            --primary: #3B82F6;
+            --primary-dark: #2563EB;
+            --success: #10B981;
+            --success-light: #D1FAE5;
+            --danger: #EF4444;
+            --danger-light: #FEE2E2;
+            --warning: #F59E0B;
+            --warning-light: #FEF3C7;
+            --overtime: #8B5CF6;
+            --text-primary: #1E293B;
+            --text-secondary: #64748B;
+            --text-muted: #94A3B8;
+            --border: #E2E8F0;
+            --chart-empty: #E5E7EB;
+            --chart-grid: #F1F5F9;
+            --weekend-bg: #F8FAFC;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 20px;
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .main-layout {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: stretch;
+        }
+
+        .left-column,
+        .right-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .left-column {
+            height: 100%;
+        }
+
+        .left-column>.card:last-child {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 16px rgba(0, 0, 0, 0.04);
+            border: 1px solid var(--border);
+        }
+
+        h2 {
+            margin: 0 0 16px 0;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* ==================== HERO STATUS CARD ==================== */
+        .hero-card {
+            text-align: center;
+            padding: 32px 24px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--success), var(--primary));
+            transition: background 0.5s;
+        }
+
+        .hero-card.inactive::before {
+            background: linear-gradient(90deg, var(--danger), var(--warning));
+        }
+
+        .hero-top-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .status-badge.active {
+            background: var(--success-light);
+            color: var(--success);
+        }
+
+        .status-badge.inactive {
+            background: var(--danger-light);
+            color: var(--danger);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.7;
+                transform: scale(1.1);
+            }
+        }
+
+        .btn-export {
+            padding: 8px 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: white;
+            color: var(--text-primary);
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: inherit;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-export:hover {
+            background: var(--chart-grid);
+            border-color: var(--text-muted);
+        }
+
+        .hero-timer {
+            font-size: 3.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1;
+            margin-bottom: 12px;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -2px;
+        }
+
+        .hero-subtitle {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .hero-progress {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            background: var(--chart-grid);
+            border-radius: 12px;
+            font-weight: 500;
+        }
+
+        .hero-progress-bar {
+            width: 50px;
+            height: 6px;
+            background: var(--chart-empty);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .hero-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--success));
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        /* Week Stats */
+        .week-stats {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+        }
+
+        .week-stat {
+            text-align: center;
+        }
+
+        .week-stat-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .week-stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        /* ==================== CHART ==================== */
+        .chart-wrapper {
+            display: flex;
+            gap: 10px;
+            flex: 1;
+            min-height: 0;
+            /* Fix flex overflow */
+        }
+
+        .chart-y-axis {
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding-bottom: 24px;
+            font-size: 10px;
+            color: var(--text-muted);
+            text-align: right;
+            min-width: 30px;
+        }
+
+        .chart-area {
+            flex: 1;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chart-grid {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 24px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            pointer-events: none;
+        }
+
+        .chart-grid-line {
+            height: 1px;
+            background: var(--chart-grid);
+        }
+
+        .chart-container {
+            flex: 1;
+            min-height: 200px;
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            position: relative;
+            z-index: 1;
+            padding-top: 40px;
+            margin-top: -40px;
+        }
+
+        .chart-card {
+            overflow: visible;
+        }
+
+        .bar {
+            flex: 1;
+            background: var(--success);
+            border-radius: 3px 3px 0 0;
+            transition: all 0.3s ease;
+            position: relative;
+            min-height: 3px;
+            cursor: pointer;
+        }
+
+        .bar:hover {
+            filter: brightness(1.1);
+            transform: scaleX(1.15);
+            z-index: 20;
+        }
+
+        .bar.empty {
+            background: var(--chart-empty);
+            min-height: 3px;
+        }
+
+        .bar.current {
+            background: linear-gradient(180deg, var(--primary) 0%, var(--success) 100%);
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
+        }
+
+        .bar::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%) scale(0.9);
+            background: var(--text-primary);
+            color: white;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            white-space: nowrap;
+            z-index: 100;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.2s;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .bar:hover::after {
+            opacity: 1;
+            transform: translateX(-50%) scale(1);
+        }
+
+        .hour-labels {
+            display: flex;
+            gap: 2px;
+            margin-top: 6px;
+        }
+
+        .hour-label {
+            flex: 1;
+            text-align: center;
+            font-size: 9px;
+            color: var(--text-muted);
+        }
+
+        .hour-label.current {
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        /* ==================== HISTORY ==================== */
+        .history-scroll {
+            height: 260px;
+            /* ~5 rows */
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        .history-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .history-scroll::-webkit-scrollbar-track {
+            background: var(--chart-grid);
+            border-radius: 3px;
+        }
+
+        .history-scroll::-webkit-scrollbar-thumb {
+            background: var(--text-muted);
+            border-radius: 3px;
+        }
+
+        .history-bar-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            gap: 12px;
+            padding: 8px;
+            border-radius: 8px;
+            transition: background 0.2s;
+            cursor: pointer;
+        }
+
+        .history-bar-container:hover {
+            background: var(--chart-grid);
+        }
+
+        .history-bar-container.weekend {
+            background: var(--weekend-bg);
+        }
+
+        .history-bar-container.selected {
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+            border: 1px solid var(--primary);
+        }
+
+        .history-date {
+            width: 100px;
+            font-weight: 500;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            flex-shrink: 0;
+        }
+
+        .history-date-main {
+            display: block;
+        }
+
+        .history-date-sub {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        .history-progress-wrapper {
+            flex: 1;
+            background: var(--chart-empty);
+            height: 24px;
+            border-radius: 6px;
+            display: flex;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-segment {
+            height: 100%;
+            transition: width 0.5s ease;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .progress-segment::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%) scale(0.9);
+            background: var(--text-primary);
+            color: white;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            white-space: nowrap;
+            z-index: 100;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.2s;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .progress-segment:hover::after {
+            opacity: 1;
+            transform: translateX(-50%) scale(1);
+        }
+
+        .segment-completed {
+            background: linear-gradient(90deg, var(--primary), var(--success));
+        }
+
+        .segment-missing {
+            background: var(--chart-empty);
+        }
+
+        .segment-overtime {
+            background: linear-gradient(90deg, var(--overtime), #A78BFA);
+        }
+
+        .segment-low {
+            background: linear-gradient(90deg, var(--danger), var(--warning));
+        }
+
+        .history-stats {
+            min-width: 70px;
+            text-align: right;
+            font-size: 0.75rem;
+        }
+
+        .history-time {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .history-percent {
+            color: var(--text-muted);
+            font-size: 0.65rem;
+        }
+
+        .history-percent.good {
+            color: var(--success);
+        }
+
+        .history-percent.low {
+            color: var(--danger);
+        }
+
+        /* ==================== LOGS ==================== */
+        .log-container {
+            height: 230px;
+            /* ~4 rows */
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .log-entry {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 10px;
+            border-radius: 8px;
+            background: var(--chart-grid);
+            transition: background 0.2s;
+        }
+
+        .log-entry:hover {
+            background: var(--border);
+        }
+
+        .log-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        .log-icon.active {
+            background: var(--success-light);
+        }
+
+        .log-icon.inactive {
+            background: var(--danger-light);
+        }
+
+        .log-icon.warning {
+            background: var(--warning-light);
+        }
+
+        .log-icon.info {
+            background: #DBEAFE;
+        }
+
+        .log-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .log-message {
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .log-message.warning {
+            color: var(--warning);
+            font-weight: 500;
+        }
+
+        .log-time {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+        }
+
+        /* ==================== RESPONSIVE ==================== */
+        @media (max-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .history-scroll {
+                max-height: 300px;
+            }
+        }
+
+        @media (max-width: 640px) {
+            body {
+                padding: 12px;
+            }
+
+            .hero-timer {
+                font-size: 2.5rem;
+            }
+
+            .hero-card {
+                padding: 20px 16px;
+            }
+
+            .card {
+                padding: 16px;
+            }
+
+            .history-bar-container {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 6px;
+            }
+
+            .history-date {
+                width: auto;
+            }
+
+            .history-stats {
+                text-align: left;
+            }
+
+            .chart-y-axis {
+                display: none;
+            }
+
+            .hero-top-row {
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .week-stats {
+                flex-direction: column;
+                gap: 10px;
+            }
+        }
+
+        /* ==================== MODAL ==================== */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .modal {
+            background: white;
+            padding: 24px;
+            border-radius: 16px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            transform: translateY(20px);
+            transition: transform 0.3s;
+        }
+
+        .modal-overlay.active .modal {
+            transform: translateY(0);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            font-size: 1.2rem;
+            color: var(--text-primary);
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+            color: var(--text-primary);
+        }
+
+        .modal-footer {
+            margin-top: 24px;
+            text-align: right;
+        }
+
+        .btn-settings {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            width: 36px;
+            height: 36px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 1.2rem;
+            transition: background 0.2s;
+        }
+
+        .btn-settings:hover {
+            background: var(--chart-grid);
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .history-icon-btn {
+            background: none;
+            border: 1px solid transparent;
+            cursor: pointer;
+            font-size: 1.2rem;
+            padding: 4px;
+            border-radius: 4px;
+            margin-right: 8px;
+            transition: all 0.2s;
+            opacity: 0.7;
+        }
+
+        .history-icon-btn:hover {
+            background: rgba(0, 0, 0, 0.05);
+            opacity: 1;
+        }
+
+        .history-icon-btn.office {
+            color: var(--primary);
+        }
+
+        .history-icon-btn.home {
+            color: var(--text-secondary);
+        }
+
+        .loc-btn {
+            border: none;
+            background: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .loc-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .loc-btn.active {
+            background: white;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+            color: var(--primary);
+            font-weight: 600;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="main-layout">
+        <!-- Left Column -->
+        <div class="left-column">
+            <!-- Hero Status Card -->
+            <div class="card hero-card" id="heroCard">
+                <div class="hero-top-row">
+                    <div id="statusBadge" class="status-badge active">
+                        <div class="status-dot"></div>
+                        <span id="statusText">Yükleniyor...</span>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button id="btnReconnect" class="btn-export"
+                            style="background: linear-gradient(135deg, #10b981, #059669);" title="Manuel Bağlan">
+                            🔄 Bağlan
+                        </button>
+                        <a href="/api/export" class="btn-export">
+                            📥 Excel İndir
+                        </a>
+                        <button id="btnSettings" class="btn-settings" title="Ayarlar">⚙️</button>
+                    </div>
+                </div>
+                <div id="heroTimer" class="hero-timer">00:00</div>
+                <div class="hero-subtitle">
+                    <div class="hero-progress">
+                        <div class="hero-progress-bar">
+                            <div id="heroProgressFill" class="hero-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <span id="heroPercent">0%</span>
+                    </div>
+                    <span>Hedef: 8 saat</span>
+                </div>
+                <div class="week-stats">
+                    <div class="week-stat">
+                        <div class="week-stat-value" id="weekTotal">-</div>
+                        <div class="week-stat-label">Bu Hafta</div>
+                    </div>
+                    <div class="week-stat">
+                        <div class="week-stat-value" id="weekPercent">-</div>
+                        <div class="week-stat-label">Haftalık Oran</div>
+                    </div>
+                    <div class="week-stat">
+                        <div class="week-stat-value" id="weekAvg">-</div>
+                        <div class="week-stat-label">Günlük Ort.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Hourly Chart -->
+            <div class="card chart-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 id="chartTitle" style="margin: 0;">Saatlik Kullanım</h2>
+                    <span id="chartDateLabel"
+                        style="font-size: 0.85rem; color: var(--text-secondary); font-weight: 500;">Bugün</span>
+                </div>
+                <div class="chart-wrapper">
+                    <div class="chart-y-axis">
+                        <span>60dk</span>
+                        <span>45dk</span>
+                        <span>30dk</span>
+                        <span>15dk</span>
+                        <span>0</span>
+                    </div>
+                    <div class="chart-area">
+                        <div class="chart-grid">
+                            <div class="chart-grid-line"></div>
+                            <div class="chart-grid-line"></div>
+                            <div class="chart-grid-line"></div>
+                            <div class="chart-grid-line"></div>
+                            <div class="chart-grid-line"></div>
+                        </div>
+                        <div id="chart" class="chart-container"></div>
+                        <div id="hourLabels" class="hour-labels"></div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Right Column -->
+        <div class="right-column">
+            <!-- History Card (Always Visible) -->
+            <div class="card" id="historyCard">
+                <h2>Geçmiş Günler (Hedef: 8 Saat)</h2>
+                <div id="historyContainer" class="history-scroll">
+                    <p style="color: var(--text-muted);">Geçmiş verisi yükleniyor...</p>
+                </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="card">
+                <h2>Sistem Kayıtları</h2>
+                <div id="logContainer" class="log-container">
+                    <!-- Logs here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Ayarlar</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="settingIp">VPN IP Adresi</label>
+                    <input type="text" id="settingIp" placeholder="orn: 10.54.2.182">
+                </div>
+                <div class="form-group">
+                    <label for="settingInterval">Kontrol Sıklığı (sn)</label>
+                    <input type="number" id="settingInterval" min="1" placeholder="Tn">
+                </div>
+                <hr style="margin: 20px 0; border: none; border-top: 1px solid var(--border);">
+                <div class="form-group">
+                    <label for="settingUrl">VPN URL</label>
+                    <input type="text" id="settingUrl" placeholder="https://vpn.example.com">
+                </div>
+                <div class="form-group">
+                    <label for="settingRealm">Realm (Varsa)</label>
+                    <input type="text" id="settingRealm" placeholder="orn: Users / albatechbt">
+                </div>
+                <div class="form-group">
+                    <label for="settingUser">Kullanıcı Adı</label>
+                    <input type="text" id="settingUser" placeholder="kullanici.adi">
+                </div>
+                <div class="form-group">
+                    <label for="settingPass">Şifre</label>
+                    <input type="password" id="settingPass" placeholder="******">
+                </div>
+                <div class="form-group">
+                    <label for="settingTotp">TOTP Secret (Token için)</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="password" id="settingTotp" placeholder="QR kodu yükleyin veya manuel girin"
+                            style="flex: 1;">
+                        <label for="qrFileInput"
+                            style="background: var(--accent-gradient); color: white; padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; white-space: nowrap;">
+                            📷 QR Yükle
+                        </label>
+                        <input type="file" id="qrFileInput" accept="image/*" style="display: none;">
+                    </div>
+                    <small id="qrStatus"
+                        style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px; display: block;"></small>
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" id="settingAuto" style="width: auto;">
+                    <label for="settingAuto" style="margin: 0; cursor: pointer;">Tam Otomatik Bağlan</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btnSaveSettings" class="btn-primary">Kaydet</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const TARGET_HOURS = 8;
+        const TARGET_SECONDS = TARGET_HOURS * 3600;
+        const WEEK_TARGET_SECONDS = 5 * TARGET_SECONDS; // 5 working days
+
+        const DAYS = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
+        const MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+            'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+
+        function formatTime(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            if (h > 0) {
+                return `${h}sa ${m}dk`;
+            }
+            return `${m}dk`;
+        }
+
+        function formatTimeShort(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            return `${h}sa ${m}dk`;
+        }
+
+        function formatDateFriendly(dateStr) {
+            const date = new Date(dateStr);
+            const today = new Date();
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            const day = date.getDate();
+            const month = MONTHS[date.getMonth()];
+            const dayName = DAYS[date.getDay()];
+            const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+
+            let mainText = '';
+            let subText = dayName;
+
+            if (date.toDateString() === today.toDateString()) {
+                mainText = 'Bugün';
+            } else if (date.toDateString() === yesterday.toDateString()) {
+                mainText = 'Dün';
+            } else {
+                mainText = `${day} ${month}`;
+            }
+
+            return { mainText, subText, isWeekend, isToday: date.toDateString() === today.toDateString() };
+        }
+
+        function parseLog(logText) {
+            const match = logText.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\.\d+ - (.+)$/);
+            if (match) {
+                const message = match[2];
+                return {
+                    time: match[1],
+                    message: message,
+                    isActive: message.includes('VPN Aktif'),
+                    isInactive: message.includes('VPN Pasif') || message.includes('Koptu'),
+                    isDisconnect: message.includes('Koptu')
+                };
+            }
+            return { time: '', message: logText, isActive: false, isInactive: false, isDisconnect: false };
+        }
+
+        function humanizeLogMessage(message) {
+            if (message.includes('Monitoring Started')) return { text: '🚀 İzleme başlatıldı', isWarning: false };
+            if (message.includes('VPN Aktif')) {
+                const match = message.match(/Toplam Süre: (\d+:\d+)/);
+                if (match) return { text: `✅ VPN bağlandı (Süre: ${match[1]})`, isWarning: false };
+                return { text: '✅ VPN bağlandı', isWarning: false };
+            }
+            if (message.includes('Koptu')) return { text: '⚠️ VPN Bağlantısı Koptu!', isWarning: true };
+            if (message.includes('VPN Pasif')) return { text: '⏸️ VPN bağlantısı kesildi', isWarning: false };
+            return { text: message, isWarning: false };
+        }
+
+        // State for history view
+        let currentViewDate = null;
+
+        function renderChart(hourlyData, totalSeconds) {
+            const chart = document.getElementById('chart');
+            const hourLabels = document.getElementById('hourLabels');
+            chart.innerHTML = '';
+            hourLabels.innerHTML = '';
+
+            const maxVal = 3600;
+            // Only highlight current hour if we are in live view (currentViewDate is null)
+            const currentHour = currentViewDate ? -1 : new Date().getHours();
+
+            for (let i = 0; i < 24; i++) {
+                const seconds = hourlyData[i] || 0;
+                const heightPercent = Math.max((seconds / maxVal) * 100, 0.5);
+                const minutes = Math.floor(seconds / 60);
+                const percent = Math.round((seconds / maxVal) * 100);
+
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+
+                if (seconds === 0) {
+                    bar.classList.add('empty');
+                    bar.style.height = '3px';
+                    bar.setAttribute('data-tooltip', `${i}:00 - Veri yok`);
+                } else {
+                    bar.style.height = heightPercent + '%';
+                    bar.setAttribute('data-tooltip', `${i}:00 - ${i}:59 | ${minutes}dk (%${percent})`);
+                }
+
+                if (i === currentHour) {
+                    bar.classList.add('current');
+                    bar.classList.remove('empty');
+                }
+
+                chart.appendChild(bar);
+
+                // Hour label
+                const label = document.createElement('div');
+                label.className = 'hour-label' + (i === currentHour ? ' current' : '');
+                label.textContent = i % 3 === 0 ? i : '';
+                hourLabels.appendChild(label);
+            }
+        }
+
+        function updateDashboard() {
+            // Skip chart update if viewing history
+            if (currentViewDate) {
+                // We still want to update Hero card and status
+                fetch('/api/status')
+                    .then(response => response.json())
+                    .then(data => {
+                        updateStatusHero(data);
+                    });
+                return;
+            }
+
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    updateStatusHero(data);
+                    renderChart(data.hourly_stats, data.total_time); // total_time is string "HH:MM", generic data passing
+                })
+                .catch(err => console.error("Update failed", err));
+        }
+
+        function updateStatusHero(data) {
+            // Status Badge
+            const heroCard = document.getElementById('heroCard');
+            const statusBadge = document.getElementById('statusBadge');
+            const isActive = data.color === 'green';
+
+            statusBadge.className = `status-badge ${isActive ? 'active' : 'inactive'}`;
+            heroCard.className = `card hero-card ${isActive ? '' : 'inactive'}`;
+            document.getElementById('statusText').textContent = data.status;
+
+            // Hero Timer
+            document.getElementById('heroTimer').textContent = data.total_time;
+
+            // Calculate progress
+            const timeParts = data.total_time.split(':');
+            const totalSeconds = parseInt(timeParts[0]) * 3600 + parseInt(timeParts[1]) * 60 + (parseInt(timeParts[2]) || 0);
+            const percent = Math.min(Math.round((totalSeconds / TARGET_SECONDS) * 100), 100);
+
+            document.getElementById('heroProgressFill').style.width = percent + '%';
+            document.getElementById('heroPercent').textContent = percent + '%';
+
+            // Logs (humanized)
+            const logContainer = document.getElementById('logContainer');
+            logContainer.innerHTML = data.logs.slice(-10).reverse().map(log => {
+                const parsed = parseLog(log);
+                const humanized = humanizeLogMessage(parsed.message);
+                const timeOnly = parsed.time.split(' ')[1] || parsed.time;
+
+                let iconClass = 'info';
+                let icon = 'ℹ';
+
+                if (parsed.isActive) {
+                    iconClass = 'active';
+                    icon = '✓';
+                } else if (parsed.isDisconnect) {
+                    iconClass = 'warning';
+                    icon = '⚠';
+                } else if (parsed.isInactive) {
+                    iconClass = 'inactive';
+                    icon = '✕';
+                }
+
+                return `
+                     <div class="log-entry">
+                         <div class="log-icon ${iconClass}">${icon}</div>
+                         <div class="log-content">
+                             <div class="log-message ${humanized.isWarning ? 'warning' : ''}">${humanized.text}</div>
+                             <div class="log-time">${timeOnly}</div>
+                         </div>
+                     </div>
+                 `;
+            }).join('');
+        }
+
+        function loadHistory() {
+            fetch('/api/history')
+                .then(res => res.json())
+                .then(data => {
+                    const container = document.getElementById('historyContainer');
+                    container.innerHTML = '';
+
+                    if (data.length === 0) {
+                        container.innerHTML = '<p style="color: var(--text-muted);">Kayıt bulunamadı.</p>';
+                        return;
+                    }
+
+                    // Calculate week stats
+                    let weekSeconds = 0;
+                    let weekDays = 0;
+                    const today = new Date();
+                    const weekStart = new Date(today);
+                    weekStart.setDate(today.getDate() - today.getDay() + 1); // Monday
+
+                    data.forEach(item => {
+                        const totalSec = item.total_seconds;
+                        const eightHours = TARGET_SECONDS;
+                        const dateInfo = formatDateFriendly(item.date);
+                        const itemDate = new Date(item.date);
+
+                        // Count week stats (Mon-Fri only)
+                        if (itemDate >= weekStart && itemDate.getDay() !== 0 && itemDate.getDay() !== 6) {
+                            weekSeconds += totalSec;
+                            weekDays++;
+                        }
+
+                        const workedSec = Math.min(totalSec, eightHours);
+                        const missingSec = Math.max(0, eightHours - totalSec);
+                        const excessSec = Math.max(0, totalSec - eightHours);
+                        const percent = Math.round((totalSec / eightHours) * 100);
+
+                        let barsHtml = '';
+                        let percentClass = '';
+
+                        if (totalSec >= eightHours) {
+                            const overWidth = Math.min((excessSec / eightHours) * 100, 50);
+                            barsHtml = `
+                                <div class="progress-segment segment-completed" style="width: 100%" data-tooltip="Tamamlanan: ${formatTime(workedSec)}"></div>
+                                ${excessSec > 0 ? `<div class="progress-segment segment-overtime" style="width: ${overWidth}%" data-tooltip="Fazla Mesai: ${formatTime(excessSec)}"></div>` : ''}
+                            `;
+                            percentClass = 'good';
+                        } else if (percent < 50) {
+                            const workedWidth = (totalSec / eightHours) * 100;
+                            barsHtml = `
+                                <div class="progress-segment segment-low" style="width: ${workedWidth}%" data-tooltip="Tamamlanan: ${formatTime(workedSec)}"></div>
+                                <div class="progress-segment segment-missing" style="width: ${100 - workedWidth}%" data-tooltip="Kalan: ${formatTime(missingSec)}"></div>
+                            `;
+                            percentClass = 'low';
+                        } else {
+                            const workedWidth = (totalSec / eightHours) * 100;
+                            barsHtml = `
+                                <div class="progress-segment segment-completed" style="width: ${workedWidth}%" data-tooltip="Tamamlanan: ${formatTime(workedSec)}"></div>
+                                <div class="progress-segment segment-missing" style="width: ${100 - workedWidth}%" data-tooltip="Kalan: ${formatTime(missingSec)}"></div>
+                            `;
+                        }
+
+                        let rowClasses = 'history-bar-container';
+
+                        // Determine active date (selected or today)
+                        const activeDate = currentViewDate || today.toISOString().split('T')[0];
+
+                        if (item.date === activeDate) {
+                            rowClasses += ' selected';
+                        } else if (dateInfo.isWeekend) {
+                            rowClasses += ' weekend';
+                        }
+
+                        const row = document.createElement('div');
+                        row.className = rowClasses;
+
+                        // Icon logic
+                        const location = item.location || 'home';
+                        const icon = location === 'office' ? '🏢' : '🏠';
+                        const iconClass = location === 'office' ? 'office' : 'home';
+                        const tooltipText = location === 'office' ? 'Ofis (8 Saat)' : 'Ev (VPN Takip)';
+
+                        row.innerHTML = `
+                            <div style="display: flex; align-items: center;">
+                                <button class="history-icon-btn ${iconClass}" title="${tooltipText} - Değiştirmek için tıkla" onclick="toggleLocation(event, '${item.date}', '${location}')">${icon}</button>
+                                <div class="history-date">
+                                    <span class="history-date-main">${dateInfo.mainText}</span>
+                                    <span class="history-date-sub">${dateInfo.subText}</span>
+                                </div>
+                            </div>
+                            <div class="history-progress-wrapper">
+                                ${barsHtml}
+                            </div>
+                            </div>
+                            <div class="history-stats">
+                                <div class="history-time">${formatTime(totalSec)}</div>
+                                <div class="history-percent ${percentClass}">${percent}%</div>
+                            </div>
+                        `;
+                        row.onclick = () => loadHistoryDate(item.date);
+                        container.appendChild(row);
+                    });
+
+                    // Update week stats
+                    const weekPercent = Math.round((weekSeconds / WEEK_TARGET_SECONDS) * 100);
+                    const avgSeconds = weekDays > 0 ? Math.round(weekSeconds / weekDays) : 0;
+
+                    document.getElementById('weekTotal').textContent = formatTimeShort(weekSeconds);
+                    document.getElementById('weekPercent').textContent = weekPercent + '%';
+                    document.getElementById('weekAvg').textContent = formatTimeShort(avgSeconds);
+                });
+        }
+
+        // Reconnect Button
+        const btnReconnect = document.getElementById('btnReconnect');
+        btnReconnect.addEventListener('click', async () => {
+            btnReconnect.disabled = true;
+            btnReconnect.textContent = '⏳ Bağlanıyor...';
+            try {
+                const res = await fetch('/api/reconnect', { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    btnReconnect.textContent = '✅ Başlatıldı';
+                } else {
+                    btnReconnect.textContent = '❌ Hata';
+                    alert(data.message);
+                }
+            } catch (err) {
+                btnReconnect.textContent = '❌ Hata';
+                alert('Bağlantı hatası: ' + err.message);
+            }
+            setTimeout(() => {
+                btnReconnect.disabled = false;
+                btnReconnect.textContent = '🔄 Bağlan';
+            }, 3000);
+        });
+
+        // Settings Modal Logic
+        const btnSettings = document.getElementById('btnSettings');
+        const modalOverlay = document.getElementById('settingsModal');
+        const modalClose = document.querySelector('.modal-close');
+        const btnSaveSettings = document.getElementById('btnSaveSettings');
+        const inputIp = document.getElementById('settingIp');
+        const inputInterval = document.getElementById('settingInterval');
+        const inputUrl = document.getElementById('settingUrl');
+        const inputRealm = document.getElementById('settingRealm');
+        const inputUser = document.getElementById('settingUser');
+        const inputPass = document.getElementById('settingPass');
+        const inputTotp = document.getElementById('settingTotp');
+        const inputAuto = document.getElementById('settingAuto');
+
+        btnSettings.addEventListener('click', () => {
+            // Fetch current settings
+            fetch('/api/settings')
+                .then(res => res.json())
+                .then(data => {
+                    inputIp.value = data.vpn_ip;
+                    inputInterval.value = data.check_interval;
+                    inputUrl.value = data.vpn_url || "";
+                    inputRealm.value = data.realm || "";
+                    inputUser.value = data.username || "";
+                    inputPass.value = data.password || "";
+                    inputTotp.value = data.totp_secret || "";
+                    inputAuto.checked = data.auto_connect || false;
+                    modalOverlay.classList.add('active');
+                })
+                .catch(err => console.error(err));
+        });
+
+        function closeModal() {
+            modalOverlay.classList.remove('active');
+        }
+
+        modalClose.addEventListener('click', closeModal);
+
+        modalOverlay.addEventListener('click', (e) => {
+            if (e.target === modalOverlay) closeModal();
+        });
+
+        btnSaveSettings.addEventListener('click', () => {
+            const ip = inputIp.value;
+            const interval = inputInterval.value;
+
+            if (!ip || !interval) {
+                alert('Lütfen IP ve Aralık alanlarını doldurun');
+                return;
+            }
+
+            fetch('/api/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    vpn_ip: ip,
+                    check_interval: interval,
+                    vpn_url: inputUrl.value,
+                    username: inputUser.value,
+                    password: inputPass.value,
+                    realm: inputRealm.value,
+                    totp_secret: inputTotp.value,
+                    auto_connect: inputAuto.checked
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert('Ayarlar kaydedildi!');
+                        closeModal();
+                    } else {
+                        alert('Hata: ' + (data.error || 'Bilinmeyen hata'));
+                    }
+                })
+                .catch(err => alert('Hata: ' + err));
+        });
+
+        // QR Code Upload Handler
+        const qrFileInput = document.getElementById('qrFileInput');
+        const qrStatus = document.getElementById('qrStatus');
+
+        qrFileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            qrStatus.textContent = 'QR kodu işleniyor...';
+            qrStatus.style.color = 'var(--text-secondary)';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/api/decode-qr', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    inputTotp.value = data.totp_secret;
+                    qrStatus.textContent = '✅ ' + data.message;
+                    qrStatus.style.color = 'var(--connected)';
+                } else {
+                    qrStatus.textContent = '❌ ' + (data.error || 'Hata oluştu');
+                    qrStatus.style.color = 'var(--disconnected)';
+                }
+            } catch (err) {
+                qrStatus.textContent = '❌ Hata: ' + err.message;
+                qrStatus.style.color = 'var(--disconnected)';
+            }
+
+            // Clear file input so same file can be re-uploaded
+            qrFileInput.value = '';
+        });
+
+        // Dynamic refresh interval from settings
+        let refreshInterval = 10000; // Default 10 seconds
+
+        async function initRefreshInterval() {
+            try {
+                const res = await fetch('/api/settings');
+                const data = await res.json();
+                refreshInterval = (data.check_interval || 10) * 1000;
+                console.log('Refresh interval:', refreshInterval, 'ms');
+            } catch (e) {
+                console.error('Settings fetch error:', e);
+            }
+        }
+
+        async function startRefreshLoop() {
+            await initRefreshInterval();
+
+            // Initial load
+            updateDashboard();
+            loadHistory();
+
+            // Set up intervals - all at same rate
+            setInterval(updateDashboard, refreshInterval);
+            setInterval(loadHistory, refreshInterval);
+        }
+
+        // History click handler
+        function loadHistoryDate(dateStr) {
+            // Check if selected date is today
+            const todayStr = new Date().toISOString().split('T')[0];
+            const isToday = (dateStr === todayStr);
+
+            // UI Update: Date Label
+            const friendly = formatDateFriendly(dateStr);
+            let labelText = friendly.mainText;
+            if (friendly.mainText !== 'Bugün' && friendly.mainText !== 'Dün') {
+                labelText = `${friendly.mainText} ${friendly.subText}`;
+            }
+            document.getElementById('chartDateLabel').textContent = labelText;
+
+            if (isToday) {
+                // Return to Live Mode
+                currentViewDate = null;
+                updateDashboard();
+                loadHistory(); // Update highlights
+                return;
+            }
+
+            fetch(`/api/history/${dateStr}`)
+                .then(res => res.json())
+                .then(data => {
+                    const hourly = data.hourly || {};
+                    const totalSec = data.total_seconds || 0;
+
+                    // Update state
+                    currentViewDate = dateStr;
+
+                    renderChart(hourly, totalSec);
+                    loadHistory(); // Update highlights
+                })
+                .catch(err => alert('Veri yüklenemedi: ' + err));
+        }
+
+
+
+        function toggleLocation(e, dateStr, currentLoc) {
+            e.stopPropagation(); // Prevent row selection
+            const newLoc = currentLoc === 'office' ? 'home' : 'office';
+
+            fetch('/api/set_location', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date: dateStr, location: newLoc })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        // Update current view if we modified the viewed date
+                        if (currentViewDate === dateStr || (!currentViewDate && dateStr === new Date().toISOString().split('T')[0])) {
+                            if (currentViewDate) loadHistoryDate(currentViewDate);
+                            else updateDashboard();
+                        }
+                        loadHistory(); // Refresh list
+                    }
+                })
+                .catch(err => alert('Değişiklik kaydedilemedi: ' + err));
+        }
+
+        startRefreshLoop();
+    </script>
+</body>
+
+</html>
