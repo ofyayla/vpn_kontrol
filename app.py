@@ -5,6 +5,8 @@ from datetime import datetime
 import json
 import os
 import sys
+import base64
+import ctypes
 import pandas as pd
 from flask import Flask, render_template, jsonify, send_file, request
 import io 
@@ -16,9 +18,167 @@ CONFIG_FILE = "config.json"
 DEFAULT_VPN_ASSIGNED_IP = "10.54.2.182"
 DEFAULT_KONTROL_SURESI = 10
 DATA_FILE = "vpn_history.json"
+SENSITIVE_FIELDS = ("password", "totp_secret")
+DPAPI_PREFIX = "dpapi:"
+FERNET_PREFIX = "fernet:"
+CRYPTPROTECT_UI_FORBIDDEN = 0x01
+DEBUG_ENABLED = os.environ.get("VPN_KONTROL_DEBUG", "false").lower() == "true"
+BIND_HOST = os.environ.get("VPN_KONTROL_HOST", "127.0.0.1")
 
 # Pulse Secure Path
 PULSE_LAUNCHER_PATH = r"C:\Program Files (x86)\Common Files\Pulse Secure\Integration\pulselauncher.exe"
+
+_fernet_cipher = None
+_fernet_checked = False
+
+def secure_file_permissions(path):
+    if os.name != "nt":
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+
+def get_fernet_cipher():
+    global _fernet_cipher, _fernet_checked
+    if _fernet_checked:
+        return _fernet_cipher
+    _fernet_checked = True
+
+    key = os.environ.get("VPN_KONTROL_SECRET_KEY", "").strip()
+    if not key:
+        return None
+
+    try:
+        from cryptography.fernet import Fernet
+        _fernet_cipher = Fernet(key.encode("utf-8"))
+    except Exception as e:
+        print(f"Fernet init error: {e}")
+        _fernet_cipher = None
+    return _fernet_cipher
+
+def dpapi_encrypt(plain_text):
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", ctypes.c_ulong),
+            ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+        ]
+
+    raw_data = plain_text.encode("utf-8")
+    in_buffer = ctypes.create_string_buffer(raw_data, len(raw_data))
+    in_blob = DATA_BLOB(len(raw_data), ctypes.cast(in_buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    out_blob = DATA_BLOB()
+
+    crypt_protect_data = ctypes.windll.crypt32.CryptProtectData
+    crypt_protect_data.argtypes = [
+        ctypes.POINTER(DATA_BLOB),
+        ctypes.c_wchar_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(DATA_BLOB),
+    ]
+    crypt_protect_data.restype = ctypes.c_bool
+
+    if not crypt_protect_data(
+        ctypes.byref(in_blob),
+        "vpn_kontrol_secret",
+        None,
+        None,
+        None,
+        CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(out_blob),
+    ):
+        raise ctypes.WinError()
+
+    try:
+        encrypted_bytes = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return base64.b64encode(encrypted_bytes).decode("ascii")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+def dpapi_decrypt(cipher_text):
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", ctypes.c_ulong),
+            ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+        ]
+
+    encrypted_bytes = base64.b64decode(cipher_text.encode("ascii"))
+    in_buffer = ctypes.create_string_buffer(encrypted_bytes, len(encrypted_bytes))
+    in_blob = DATA_BLOB(len(encrypted_bytes), ctypes.cast(in_buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    out_blob = DATA_BLOB()
+
+    crypt_unprotect_data = ctypes.windll.crypt32.CryptUnprotectData
+    crypt_unprotect_data.argtypes = [
+        ctypes.POINTER(DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(DATA_BLOB),
+    ]
+    crypt_unprotect_data.restype = ctypes.c_bool
+
+    if not crypt_unprotect_data(
+        ctypes.byref(in_blob),
+        None,
+        None,
+        None,
+        None,
+        CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(out_blob),
+    ):
+        raise ctypes.WinError()
+
+    try:
+        decrypted_bytes = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return decrypted_bytes.decode("utf-8")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+def encrypt_sensitive_value(value):
+    if not value:
+        return ""
+
+    if sys.platform == "win32":
+        return f"{DPAPI_PREFIX}{dpapi_encrypt(value)}"
+
+    fernet_cipher = get_fernet_cipher()
+    if fernet_cipher:
+        encrypted = fernet_cipher.encrypt(value.encode("utf-8")).decode("utf-8")
+        return f"{FERNET_PREFIX}{encrypted}"
+
+    raise RuntimeError(
+        "Secure secret storage unavailable. On non-Windows systems set VPN_KONTROL_SECRET_KEY (Fernet key)."
+    )
+
+def decrypt_sensitive_value(value):
+    if not value:
+        return ""
+
+    if value.startswith(DPAPI_PREFIX):
+        if sys.platform != "win32":
+            raise RuntimeError("DPAPI encrypted config can only be decrypted on Windows.")
+        return dpapi_decrypt(value[len(DPAPI_PREFIX):])
+
+    if value.startswith(FERNET_PREFIX):
+        fernet_cipher = get_fernet_cipher()
+        if not fernet_cipher:
+            raise RuntimeError("Missing VPN_KONTROL_SECRET_KEY for encrypted config.")
+        return fernet_cipher.decrypt(value[len(FERNET_PREFIX):].encode("utf-8")).decode("utf-8")
+
+    # Legacy plaintext value
+    return value
+
+def persist_config(config_data):
+    temp_file = f"{CONFIG_FILE}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, indent=4)
+    secure_file_permissions(temp_file)
+    os.replace(temp_file, CONFIG_FILE)
+    secure_file_permissions(CONFIG_FILE)
 
 def load_config():
     config = {
@@ -33,21 +193,58 @@ def load_config():
     }
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 saved_config = json.load(f)
-                config.update(saved_config)
+                for key, value in saved_config.items():
+                    if key not in SENSITIVE_FIELDS:
+                        config[key] = value
+
+                migration_needed = False
+                for field in SENSITIVE_FIELDS:
+                    stored_value = saved_config.get(field, "")
+                    if stored_value:
+                        try:
+                            config[field] = decrypt_sensitive_value(stored_value)
+                            if not (stored_value.startswith(DPAPI_PREFIX) or stored_value.startswith(FERNET_PREFIX)):
+                                migration_needed = True
+                        except Exception as e:
+                            print(f"Config decrypt error ({field}): {e}")
+                            config[field] = ""
+                    else:
+                        config[field] = ""
+
+                if migration_needed:
+                    save_result = save_config(config)
+                    if not save_result["success"] or save_result["warnings"]:
+                        print("Warning: Legacy plaintext secrets could not be migrated to encrypted storage.")
         except Exception as e:
             print(f"Config load error: {e}")
     return config
 
 def save_config(new_config):
+    warnings = []
+    config_to_save = {}
+    for key, value in new_config.items():
+        if key not in SENSITIVE_FIELDS:
+            config_to_save[key] = value
+
+    for field in SENSITIVE_FIELDS:
+        plain_value = new_config.get(field, "")
+        if not plain_value:
+            config_to_save[field] = ""
+            continue
+        try:
+            config_to_save[field] = encrypt_sensitive_value(plain_value)
+        except Exception as e:
+            config_to_save[field] = ""
+            warnings.append(f"{field} not persisted securely: {e}")
+
     try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(new_config, f, indent=4)
-        return True
+        persist_config(config_to_save)
+        return {"success": True, "warnings": warnings}
     except Exception as e:
         print(f"Config save error: {e}")
-        return False
+        return {"success": False, "warnings": warnings}
 
 # Global State
 current_config = load_config()
@@ -71,12 +268,14 @@ monitor_state = {
 }
 
 def log_yaz(mesaj):
-    with open("vpn_kontrol_log.txt", "a") as dosya:
+    log_file = "vpn_kontrol_log.txt"
+    with open(log_file, "a", encoding="utf-8") as dosya:
         entry = f"{datetime.now()} - {mesaj}"
         try:
             dosya.write(f"{entry}\n")
         except:
              pass 
+    secure_file_permissions(log_file)
     
     # Keep last 50 logs in memory for UI
     monitor_state["logs"].append(entry)
@@ -129,7 +328,7 @@ def enter_token_in_pulse_window():
         log_yaz("HATA: TOTP token oluşturulamadı. Secret key kontrol edin.")
         return False
     
-    log_yaz(f"TOTP token üretildi: {token[:2]}****")
+    log_yaz("TOTP token üretildi.")
     
     # Wait for the Pulse window to appear
     max_wait = 30  # seconds
@@ -348,7 +547,7 @@ def read_json_safe():
         if not os.path.exists(DATA_FILE):
             return {}
         try:
-            with open(DATA_FILE, "r") as f:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except:
             return {}
@@ -358,21 +557,43 @@ def write_json_safe(data):
         try:
             # Atomic write pattern
             temp_file = f"{DATA_FILE}.tmp"
-            with open(temp_file, "w") as f:
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
+            secure_file_permissions(temp_file)
             os.replace(temp_file, DATA_FILE)
+            secure_file_permissions(DATA_FILE)
         except Exception as e:
             print(f"Save error: {e}")
 
-# Start background thread only if we are in the main reloader process
-# Flask with debug=True spawns a child process. We want the monitor only in that child.
-if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+# Start background thread once:
+# - debug=False: start directly
+# - debug=True: start only in reloader child process
+if (not DEBUG_ENABLED) or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     thread = threading.Thread(target=monitor_loop, daemon=True)
     thread.start()
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.after_request
+def set_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data: blob:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'"
+    )
+    return response
 
 @app.route('/api/status')
 def api_status():
@@ -548,9 +769,9 @@ def api_settings():
             "check_interval": monitor_state["check_interval"],
             "vpn_url": monitor_state["vpn_url"],
             "username": monitor_state["username"],
-            "password": monitor_state["password"],
             "realm": monitor_state.get("realm", ""),
-            "totp_secret": monitor_state.get("totp_secret", ""),
+            "has_password": bool(monitor_state["password"]),
+            "has_totp_secret": bool(monitor_state.get("totp_secret", "")),
             "auto_connect": monitor_state["auto_connect"]
         })
     
@@ -561,13 +782,21 @@ def api_settings():
             monitor_state["check_interval"] = int(data.get('check_interval', monitor_state["check_interval"]))
             monitor_state["vpn_url"] = data.get('vpn_url', "")
             monitor_state["username"] = data.get('username', "")
-            monitor_state["password"] = data.get('password', "")
             monitor_state["realm"] = data.get('realm', "")
-            monitor_state["totp_secret"] = data.get('totp_secret', "")
             monitor_state["auto_connect"] = data.get('auto_connect', False)
+
+            if data.get("clear_password"):
+                monitor_state["password"] = ""
+            elif "password" in data:
+                monitor_state["password"] = data.get("password", "")
+
+            if data.get("clear_totp_secret"):
+                monitor_state["totp_secret"] = ""
+            elif "totp_secret" in data:
+                monitor_state["totp_secret"] = data.get("totp_secret", "")
             
             # Save to Config
-            save_config({
+            save_result = save_config({
                 "vpn_ip": monitor_state["vpn_ip"],
                 "check_interval": monitor_state["check_interval"],
                 "vpn_url": monitor_state["vpn_url"],
@@ -577,9 +806,15 @@ def api_settings():
                 "totp_secret": monitor_state["totp_secret"],
                 "auto_connect": monitor_state["auto_connect"]
             })
+
+            if not save_result["success"]:
+                return jsonify({"error": "Ayarlar kaydedilemedi."}), 500
             
             log_yaz(f"Ayarlar güncellendi: IP={monitor_state['vpn_ip']}, OtoConnect={monitor_state['auto_connect']}")
-            return jsonify({"status": "success", "message": "Settings saved"})
+            response_payload = {"status": "success", "message": "Settings saved"}
+            if save_result["warnings"]:
+                response_payload["warning"] = "Bazı gizli alanlar güvenli biçimde kaydedilemedi."
+            return jsonify(response_payload)
             
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -632,7 +867,7 @@ def decode_qr():
             
             # Auto-save to monitor_state and config
             monitor_state["totp_secret"] = totp_secret
-            save_config({
+            save_result = save_config({
                 "vpn_ip": monitor_state["vpn_ip"],
                 "check_interval": monitor_state["check_interval"],
                 "vpn_url": monitor_state["vpn_url"],
@@ -642,14 +877,18 @@ def decode_qr():
                 "totp_secret": totp_secret,
                 "auto_connect": monitor_state["auto_connect"]
             })
+            if not save_result["success"]:
+                return jsonify({"error": "TOTP Secret güvenli olarak kaydedilemedi"}), 500
             
             log_yaz(f"QR'dan TOTP Secret kaydedildi")
             
-            return jsonify({
+            response_payload = {
                 "status": "success",
-                "totp_secret": totp_secret,
                 "message": f"TOTP Secret kaydedildi! Artık token otomatik girilecek."
-            })
+            }
+            if save_result["warnings"]:
+                response_payload["warning"] = "TOTP secret dosyaya güvenli olarak yazılamadı. Uygulama kapanınca tekrar girmeniz gerekir."
+            return jsonify(response_payload)
         
         # Check if it's a standard otpauth URL
         elif qr_data.startswith('otpauth://totp/'):
@@ -659,7 +898,7 @@ def decode_qr():
             
             # Auto-save to monitor_state and config
             monitor_state["totp_secret"] = secret
-            save_config({
+            save_result = save_config({
                 "vpn_ip": monitor_state["vpn_ip"],
                 "check_interval": monitor_state["check_interval"],
                 "vpn_url": monitor_state["vpn_url"],
@@ -669,14 +908,18 @@ def decode_qr():
                 "totp_secret": secret,
                 "auto_connect": monitor_state["auto_connect"]
             })
+            if not save_result["success"]:
+                return jsonify({"error": "TOTP Secret güvenli olarak kaydedilemedi"}), 500
             
             log_yaz(f"QR'dan TOTP Secret kaydedildi")
             
-            return jsonify({
+            response_payload = {
                 "status": "success",
-                "totp_secret": secret,
                 "message": "TOTP Secret kaydedildi! Artık token otomatik girilecek."
-            })
+            }
+            if save_result["warnings"]:
+                response_payload["warning"] = "TOTP secret dosyaya güvenli olarak yazılamadı. Uygulama kapanınca tekrar girmeniz gerekir."
+            return jsonify(response_payload)
         
         else:
             return jsonify({"error": f"Desteklenmeyen QR formatı: {qr_data[:50]}..."}), 400
@@ -685,4 +928,4 @@ def decode_qr():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host=BIND_HOST, port=5000, debug=DEBUG_ENABLED)

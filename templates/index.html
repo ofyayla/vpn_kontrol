@@ -956,6 +956,10 @@
                 <div class="form-group">
                     <label for="settingPass">Şifre</label>
                     <input type="password" id="settingPass" placeholder="******">
+                    <label style="display:flex; align-items:center; gap:8px; margin-top:6px; font-size:0.8rem; color:var(--text-secondary);">
+                        <input type="checkbox" id="clearPassword" style="width:auto;">
+                        Kayıtlı şifreyi sil
+                    </label>
                 </div>
                 <div class="form-group">
                     <label for="settingTotp">TOTP Secret (Token için)</label>
@@ -968,6 +972,10 @@
                         </label>
                         <input type="file" id="qrFileInput" accept="image/*" style="display: none;">
                     </div>
+                    <label style="display:flex; align-items:center; gap:8px; margin-top:6px; font-size:0.8rem; color:var(--text-secondary);">
+                        <input type="checkbox" id="clearTotp" style="width:auto;">
+                        Kayıtlı TOTP secret'ı sil
+                    </label>
                     <small id="qrStatus"
                         style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px; display: block;"></small>
                 </div>
@@ -1326,7 +1334,9 @@
         const inputRealm = document.getElementById('settingRealm');
         const inputUser = document.getElementById('settingUser');
         const inputPass = document.getElementById('settingPass');
+        const clearPassword = document.getElementById('clearPassword');
         const inputTotp = document.getElementById('settingTotp');
+        const clearTotp = document.getElementById('clearTotp');
         const inputAuto = document.getElementById('settingAuto');
 
         btnSettings.addEventListener('click', () => {
@@ -1339,8 +1349,16 @@
                     inputUrl.value = data.vpn_url || "";
                     inputRealm.value = data.realm || "";
                     inputUser.value = data.username || "";
-                    inputPass.value = data.password || "";
-                    inputTotp.value = data.totp_secret || "";
+                    inputPass.value = "";
+                    inputTotp.value = "";
+                    clearPassword.checked = false;
+                    clearTotp.checked = false;
+                    inputPass.placeholder = data.has_password
+                        ? "Kayıtlı şifre var (değiştirmek için yeni şifre girin)"
+                        : "******";
+                    inputTotp.placeholder = data.has_totp_secret
+                        ? "Kayıtlı TOTP var (değiştirmek için yeni değer girin)"
+                        : "QR kodu yükleyin veya manuel girin";
                     inputAuto.checked = data.auto_connect || false;
                     modalOverlay.classList.add('active');
                 })
@@ -1366,26 +1384,42 @@
                 return;
             }
 
+            const payload = {
+                vpn_ip: ip,
+                check_interval: interval,
+                vpn_url: inputUrl.value,
+                username: inputUser.value,
+                realm: inputRealm.value,
+                auto_connect: inputAuto.checked
+            };
+
+            if (clearPassword.checked) {
+                payload.clear_password = true;
+            } else if (inputPass.value.trim()) {
+                payload.password = inputPass.value;
+            }
+
+            if (clearTotp.checked) {
+                payload.clear_totp_secret = true;
+            } else if (inputTotp.value.trim()) {
+                payload.totp_secret = inputTotp.value;
+            }
+
             fetch('/api/settings', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    vpn_ip: ip,
-                    check_interval: interval,
-                    vpn_url: inputUrl.value,
-                    username: inputUser.value,
-                    password: inputPass.value,
-                    realm: inputRealm.value,
-                    totp_secret: inputTotp.value,
-                    auto_connect: inputAuto.checked
-                })
+                body: JSON.stringify(payload)
             })
                 .then(res => res.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        alert('Ayarlar kaydedildi!');
+                        let message = 'Ayarlar kaydedildi!';
+                        if (data.warning) {
+                            message += '\n' + data.warning;
+                        }
+                        alert(message);
                         closeModal();
                     } else {
                         alert('Hata: ' + (data.error || 'Bilinmeyen hata'));
@@ -1416,9 +1450,11 @@
                 const data = await res.json();
 
                 if (data.status === 'success') {
-                    inputTotp.value = data.totp_secret;
-                    qrStatus.textContent = '✅ ' + data.message;
+                    qrStatus.textContent = '✅ ' + data.message + (data.warning ? ' ' + data.warning : '');
                     qrStatus.style.color = 'var(--connected)';
+                    inputTotp.value = '';
+                    clearTotp.checked = false;
+                    inputTotp.placeholder = 'Kayıtlı TOTP var (değiştirmek için yeni değer girin)';
                 } else {
                     qrStatus.textContent = '❌ ' + (data.error || 'Hata oluştu');
                     qrStatus.style.color = 'var(--disconnected)';
