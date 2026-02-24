@@ -10,6 +10,8 @@ import ctypes
 import pandas as pd
 from flask import Flask, render_template, jsonify, send_file, request
 import io
+import signal
+import atexit
 
 # Import new secure storage module
 from secure_storage import (
@@ -50,6 +52,9 @@ except Exception as e:
 
 _fernet_cipher = None
 _fernet_checked = False
+
+# Shutdown flag for graceful termination
+_shutdown_flag = threading.Event()
 
 def secure_file_permissions(path):
     """Set secure file permissions using Windows ACLs or Unix permissions"""
@@ -209,7 +214,8 @@ def load_config():
         "password": "",
         "realm": "",
         "totp_secret": "",
-        "auto_connect": False
+        "auto_connect": False,
+        "max_auto_retry": 3
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -284,6 +290,8 @@ monitor_state = {
     "realm": current_config.get("realm", ""),
     "totp_secret": current_config.get("totp_secret", ""),
     "auto_connect": current_config.get("auto_connect", False),
+    "max_auto_retry": int(current_config.get("max_auto_retry", 3)),
+    "auto_retry_count": 0,
     "status": "Unknown",
     "status_color": "gray",
     "total_connected_seconds": 0,
@@ -319,6 +327,52 @@ def log_yaz(mesaj):
     monitor_state["logs"].append(entry)
     if len(monitor_state["logs"]) > 50:
         monitor_state["logs"].pop(0)
+
+def detect_vpn_ip():
+    """Detect the actual VPN IP address from network interfaces"""
+    try:
+        if sys.platform != "win32":
+            return None
+        
+        # Use PowerShell to get network adapter information
+        # Look for adapters with Pulse, Ivanti, Juniper, or VPN-related names
+        ps_cmd = '''
+        Get-NetAdapter | Where-Object {
+            $_.Status -eq 'Up' -and (
+                $_.InterfaceDescription -like '*Pulse*' -or
+                $_.InterfaceDescription -like '*Ivanti*' -or
+                $_.InterfaceDescription -like '*Juniper*' -or
+                $_.Name -like '*VPN*' -or
+                $_.Name -like '*Pulse*'
+            )
+        } | ForEach-Object {
+            $adapter = $_
+            Get-NetIPAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | 
+            Select-Object -ExpandProperty IPAddress
+        }
+        '''
+        
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5
+        )
+        
+        if result.returncode == 0 and result.stdout:
+            ip_addresses = result.stdout.decode('utf-8').strip().split('\n')
+            # Return the first valid IP found
+            for ip in ip_addresses:
+                ip = ip.strip()
+                if ip and not ip.startswith('169.254'):  # Ignore APIPA addresses
+                    return ip
+        
+        return None
+    except Exception as e:
+        if DEBUG_ENABLED:
+            print(f"VPN IP Detection Error: {e}")
+        return None
 
 def vpn_baglanti_kontrol_et(ip):
     try:
@@ -549,85 +603,145 @@ def monitor_loop():
     
     last_connection_attempt = 0
     COOLDOWN_SECONDS = 30 # 30 seconds cooldown between auto-reconnect attempts
+    last_ip_check = 0
+    IP_CHECK_INTERVAL = 60  # Check for IP changes every 60 seconds
     
     # Track current day to detect date changes
     current_day_str = datetime.now().strftime("%Y-%m-%d")
     
-    while True:
-        # Check if day changed
-        now_day_str = datetime.now().strftime("%Y-%m-%d")
-        if now_day_str != current_day_str:
-            log_yaz(f"Yeni güne geçiş tespit edildi: {now_day_str}. Sayaçlar sıfırlanıyor.")
-            
-            # Reset counters for the new day
-            monitor_state["total_connected_seconds"] = 0
-            monitor_state["real_vpn_seconds"] = 0
-            monitor_state["hourly_stats"] = {i: 0 for i in range(24)}
-            monitor_state["location"] = "home" # Reset location to home default
-            
-            current_day_str = now_day_str
-            # Save immediately to initialize the new day in file
-            save_history()
-
-        is_connected = vpn_baglanti_kontrol_et(monitor_state["vpn_ip"])
-        
-        if not is_connected:
-            monitor_state["status"] = "VPN Bağlantısı Koptu!"
-            monitor_state["status_color"] = "red"
-            
-            # Log only if status changed or periodically? 
-            # To avoid spam, we log only if previous state was different is better but keeping simple for now.
-            # Actually, let's just log every disconnect if we are in 'red' state for long time?
-            # Existing logic was simple loop.
-            
-            # Check for Auto Connect
-            if monitor_state["auto_connect"]:
-                now = time.time()
-                if now - last_connection_attempt > COOLDOWN_SECONDS:
-                    log_yaz("VPN Koptu. Otomatik bağlanılıyor...")
-                    if vpn_baglan():
-                         last_connection_attempt = now
-                    else:
-                         last_connection_attempt = now + 60 # Retry sooner if launch failed
-                else:
-                    # In cooldown - log remaining time
-                    remaining = int(COOLDOWN_SECONDS - (now - last_connection_attempt))
-                    if remaining % 10 == 0:  # Log every 10 seconds
-                        log_yaz(f"Bekleniyor... ({remaining}s)")
-            else:
-                 log_yaz("Otomatik bağlantı kapalı.")
-                 # Just log if not already spamming?
-                 # To prevent log spam, we could check if we already logged 'Disconnected' recently 
-                 # but original code was simple. Let's keep it simple but maybe log periodically.
-                 pass
-                 
-        else:
-            monitor_state["status"] = "VPN Bağlantısı Aktif"
-            monitor_state["status_color"] = "green"
-            last_connection_attempt = 0 # Reset cooldown on success
-            
-            # Stats update
-            now = datetime.now()
-            # Stats update
-            now = datetime.now()
-            monitor_state["hourly_stats"][now.hour] = monitor_state["hourly_stats"].get(now.hour, 0) + monitor_state["check_interval"]
-            monitor_state["real_vpn_seconds"] += monitor_state["check_interval"]
-            
-            # Update effective total based on location
-            if monitor_state["location"] == "office":
-                 monitor_state["total_connected_seconds"] = 28800 # 8 hours
-            else:
-                 monitor_state["total_connected_seconds"] = monitor_state["real_vpn_seconds"]
-
-            # Periodic logging
-            if time.time() - monitor_state["last_log_time"] >= 60:
-                hours = monitor_state["total_connected_seconds"] // 3600
-                minutes = (monitor_state["total_connected_seconds"] % 3600) // 60
-                log_yaz(f"VPN Aktif - Toplam Süre: {int(hours):02d}:{int(minutes):02d}")
-                monitor_state["last_log_time"] = time.time()
+    while not _shutdown_flag.is_set():
+        try:
+            # Check if day changed
+            now_day_str = datetime.now().strftime("%Y-%m-%d")
+            if now_day_str != current_day_str:
+                log_yaz(f"Yeni güne geçiş tespit edildi: {now_day_str}. Sayaçlar sıfırlanıyor.")
+                
+                # Reset counters for the new day
+                monitor_state["total_connected_seconds"] = 0
+                monitor_state["real_vpn_seconds"] = 0
+                monitor_state["hourly_stats"] = {i: 0 for i in range(24)}
+                monitor_state["location"] = "home" # Reset location to home default
+                
+                current_day_str = now_day_str
+                # Save immediately to initialize the new day in file
                 save_history()
 
-        time.sleep(monitor_state["check_interval"])
+            is_connected = vpn_baglanti_kontrol_et(monitor_state["vpn_ip"])
+            
+            # Periodically check if VPN IP has changed (when connected)
+            if is_connected:
+                now = time.time()
+                if now - last_ip_check > IP_CHECK_INTERVAL:
+                    last_ip_check = now
+                    detected_ip = detect_vpn_ip()
+                    
+                    if detected_ip and detected_ip != monitor_state["vpn_ip"]:
+                        old_ip = monitor_state["vpn_ip"]
+                        monitor_state["vpn_ip"] = detected_ip
+                        log_yaz(f"VPN IP değişikliği tespit edildi: {old_ip} -> {detected_ip}")
+                        
+                        # Update config file
+                        try:
+                            save_result = save_config({
+                                "vpn_ip": detected_ip,
+                                "check_interval": monitor_state["check_interval"],
+                                "vpn_url": monitor_state["vpn_url"],
+                                "username": monitor_state["username"],
+                                "password": monitor_state["password"],
+                                "realm": monitor_state["realm"],
+                                "totp_secret": monitor_state["totp_secret"],
+                                "auto_connect": monitor_state["auto_connect"],
+                                "max_auto_retry": monitor_state["max_auto_retry"]
+                            })
+                            if save_result["success"]:
+                                log_yaz("VPN IP konfigürasyonda güncellendi")
+                            else:
+                                log_yaz("UYARI: VPN IP konfigürasyona kaydedilemedi")
+                        except Exception as e:
+                            log_yaz(f"VPN IP kaydetme hatası: {e}")
+            
+            if not is_connected:
+                monitor_state["status"] = "VPN Bağlantısı Koptu!"
+                monitor_state["status_color"] = "red"
+                
+                # Log only if status changed or periodically? 
+                # To avoid spam, we log only if previous state was different is better but keeping simple for now.
+                # Actually, let's just log every disconnect if we are in 'red' state for long time?
+                # Existing logic was simple loop.
+                
+                # Check for Auto Connect
+                if monitor_state["auto_connect"]:
+                    max_retries = monitor_state.get("max_auto_retry", 3)
+                    retry_count = monitor_state.get("auto_retry_count", 0)
+                    
+                    # Check if max retries exceeded
+                    if retry_count >= max_retries:
+                        if retry_count == max_retries:  # Log only once
+                            log_yaz(f"UYARI: Maksimum deneme sayısına ulaşıldı ({max_retries}). Otomatik bağlantı durduruluyor.")
+                            log_yaz("Yeniden denemek için manuel bağlantı yapın veya ayarları güncelleyin.")
+                            monitor_state["auto_retry_count"] = max_retries + 1  # Prevent repeated logging
+                    else:
+                        now = time.time()
+                        if now - last_connection_attempt > COOLDOWN_SECONDS:
+                            log_yaz(f"VPN Koptu. Otomatik bağlanılıyor... (Deneme {retry_count + 1}/{max_retries})")
+                            if vpn_baglan():
+                                last_connection_attempt = now
+                                monitor_state["auto_retry_count"] = retry_count + 1
+                            else:
+                                last_connection_attempt = now + 60 # Retry sooner if launch failed
+                                monitor_state["auto_retry_count"] = retry_count + 1
+                        else:
+                            # In cooldown - log remaining time
+                            remaining = int(COOLDOWN_SECONDS - (now - last_connection_attempt))
+                            if remaining % 10 == 0:  # Log every 10 seconds
+                                log_yaz(f"Bekleniyor... ({remaining}s)")
+                else:
+                     log_yaz("Otomatik bağlantı kapalı.")
+                     # Just log if not already spamming?
+                     # To prevent log spam, we could check if we already logged 'Disconnected' recently 
+                     # but original code was simple. Let's keep it simple but maybe log periodically.
+                     pass
+                     
+            else:
+                monitor_state["status"] = "VPN Bağlantısı Aktif"
+                monitor_state["status_color"] = "green"
+                last_connection_attempt = 0 # Reset cooldown on success
+                monitor_state["auto_retry_count"] = 0  # Reset retry counter on successful connection
+                
+                # Stats update
+                now = datetime.now()
+                # Stats update
+                now = datetime.now()
+                monitor_state["hourly_stats"][now.hour] = monitor_state["hourly_stats"].get(now.hour, 0) + monitor_state["check_interval"]
+                monitor_state["real_vpn_seconds"] += monitor_state["check_interval"]
+                
+                # Update effective total based on location
+                if monitor_state["location"] == "office":
+                     monitor_state["total_connected_seconds"] = 28800 # 8 hours
+                else:
+                     monitor_state["total_connected_seconds"] = monitor_state["real_vpn_seconds"]
+
+                # Periodic logging
+                if time.time() - monitor_state["last_log_time"] >= 60:
+                    hours = monitor_state["total_connected_seconds"] // 3600
+                    minutes = (monitor_state["total_connected_seconds"] % 3600) // 60
+                    log_yaz(f"VPN Aktif - Toplam Süre: {int(hours):02d}:{int(minutes):02d}")
+                    monitor_state["last_log_time"] = time.time()
+                    save_history()
+
+            # Sleep in small intervals to allow quick shutdown
+            for _ in range(monitor_state["check_interval"]):
+                if _shutdown_flag.is_set():
+                    break
+                time.sleep(1)
+                    
+        except Exception as e:
+            log_yaz(f"Monitor loop error: {e}")
+            if not _shutdown_flag.is_set():
+                time.sleep(5)  # Wait a bit before retrying
+    
+    log_yaz("Monitoring Stopped")
+    print("Monitor Thread Stopped")
 
 # File Lock for thread safety
 file_lock = threading.Lock()
@@ -654,6 +768,33 @@ def write_json_safe(data):
             secure_file_permissions(DATA_FILE)
         except Exception as e:
             print(f"Save error: {e}")
+
+def cleanup_on_shutdown():
+    """Cleanup function called on program exit"""
+    print("Shutting down gracefully...")
+    _shutdown_flag.set()
+    log_yaz("Application shutting down")
+    # Give the monitor thread a moment to finish
+    time.sleep(2)
+    print("Shutdown complete")
+
+# Register cleanup handlers
+atexit.register(cleanup_on_shutdown)
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals"""
+    print(f"\nReceived signal {signum}, shutting down...")
+    cleanup_on_shutdown()
+    sys.exit(0)
+
+# Register signal handlers for Windows
+if sys.platform == "win32":
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGBREAK, signal_handler)
+else:
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
 # Start background thread once:
 # - debug=False: start directly
@@ -705,12 +846,72 @@ def api_reconnect():
     """Manually trigger VPN reconnection"""
     try:
         log_yaz("Manuel bağlantı isteği alındı...")
+        # Reset retry counter on manual connection
+        monitor_state["auto_retry_count"] = 0
         success = vpn_baglan()
         if success:
             return jsonify({"status": "success", "message": "Bağlantı başlatıldı"})
         else:
             return jsonify({"status": "error", "message": "Bağlantı başlatılamadı"}), 500
     except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/detect-ip', methods=['POST'])
+def api_detect_ip():
+    """Manually detect and update VPN IP address"""
+    try:
+        log_yaz("VPN IP algılama isteği alındı...")
+        detected_ip = detect_vpn_ip()
+        
+        if not detected_ip:
+            return jsonify({
+                "status": "error", 
+                "message": "VPN IP adresi algılanamadı. VPN bağlı olduğundan emin olun."
+            }), 404
+        
+        old_ip = monitor_state["vpn_ip"]
+        
+        if detected_ip == old_ip:
+            return jsonify({
+                "status": "success",
+                "message": f"VPN IP değişmedi: {detected_ip}",
+                "ip": detected_ip,
+                "changed": False
+            })
+        
+        # Update monitor state
+        monitor_state["vpn_ip"] = detected_ip
+        
+        # Save to config
+        save_result = save_config({
+            "vpn_ip": detected_ip,
+            "check_interval": monitor_state["check_interval"],
+            "vpn_url": monitor_state["vpn_url"],
+            "username": monitor_state["username"],
+            "password": monitor_state["password"],
+            "realm": monitor_state["realm"],
+            "totp_secret": monitor_state["totp_secret"],
+            "auto_connect": monitor_state["auto_connect"],
+            "max_auto_retry": monitor_state["max_auto_retry"]
+        })
+        
+        if save_result["success"]:
+            log_yaz(f"VPN IP güncellendi: {old_ip} -> {detected_ip}")
+            return jsonify({
+                "status": "success",
+                "message": f"VPN IP güncellendi: {old_ip} → {detected_ip}",
+                "old_ip": old_ip,
+                "new_ip": detected_ip,
+                "changed": True
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "VPN IP algılandı ancak kaydedilemedi"
+            }), 500
+            
+    except Exception as e:
+        log_yaz(f"VPN IP algılama hatası: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/history')
@@ -862,7 +1063,9 @@ def api_settings():
             "realm": monitor_state.get("realm", ""),
             "has_password": bool(monitor_state["password"]),
             "has_totp_secret": bool(monitor_state.get("totp_secret", "")),
-            "auto_connect": monitor_state["auto_connect"]
+            "auto_connect": monitor_state["auto_connect"],
+            "max_auto_retry": monitor_state.get("max_auto_retry", 3),
+            "auto_retry_count": monitor_state.get("auto_retry_count", 0)
         })
     
     elif request.method == 'POST':
@@ -874,6 +1077,12 @@ def api_settings():
             monitor_state["username"] = data.get('username', "")
             monitor_state["realm"] = data.get('realm', "")
             monitor_state["auto_connect"] = data.get('auto_connect', False)
+            monitor_state["max_auto_retry"] = int(data.get('max_auto_retry', 3))
+            
+            # Reset retry counter when settings are updated
+            if "max_auto_retry" in data:
+                monitor_state["auto_retry_count"] = 0
+                log_yaz(f"Maksimum otomatik bağlantı denemesi güncellendi: {monitor_state['max_auto_retry']}")
 
             if data.get("clear_password"):
                 monitor_state["password"] = ""
@@ -894,7 +1103,8 @@ def api_settings():
                 "password": monitor_state["password"],
                 "realm": monitor_state["realm"],
                 "totp_secret": monitor_state["totp_secret"],
-                "auto_connect": monitor_state["auto_connect"]
+                "auto_connect": monitor_state["auto_connect"],
+                "max_auto_retry": monitor_state["max_auto_retry"]
             })
 
             if not save_result["success"]:
@@ -965,7 +1175,8 @@ def decode_qr():
                 "password": monitor_state["password"],
                 "realm": monitor_state["realm"],
                 "totp_secret": totp_secret,
-                "auto_connect": monitor_state["auto_connect"]
+                "auto_connect": monitor_state["auto_connect"],
+                "max_auto_retry": monitor_state.get("max_auto_retry", 3)
             })
             if not save_result["success"]:
                 return jsonify({"error": "TOTP Secret güvenli olarak kaydedilemedi"}), 500
@@ -996,7 +1207,8 @@ def decode_qr():
                 "password": monitor_state["password"],
                 "realm": monitor_state["realm"],
                 "totp_secret": secret,
-                "auto_connect": monitor_state["auto_connect"]
+                "auto_connect": monitor_state["auto_connect"],
+                "max_auto_retry": monitor_state.get("max_auto_retry", 3)
             })
             if not save_result["success"]:
                 return jsonify({"error": "TOTP Secret güvenli olarak kaydedilemedi"}), 500
@@ -1016,6 +1228,27 @@ def decode_qr():
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/shutdown', methods=['POST'])
+def api_shutdown():
+    """Gracefully shutdown the application"""
+    try:
+        log_yaz("Uygulama kapatma isteği alındı")
+        
+        def shutdown_server():
+            time.sleep(1)  # Give time for response to be sent
+            cleanup_on_shutdown()
+            os._exit(0)
+        
+        # Run shutdown in a separate thread
+        threading.Thread(target=shutdown_server, daemon=True).start()
+        
+        return jsonify({
+            "status": "success",
+            "message": "Uygulama kapatılıyor..."
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host=BIND_HOST, port=5000, debug=DEBUG_ENABLED)

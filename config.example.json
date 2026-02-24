@@ -7,5 +7,6 @@
     "realm": "",
     "totp_secret": "YOUR_TOTP_SECRET_KEY",
     "auto_connect": false,
+    "max_auto_retry": 3,
     "python_executable": "python"
 }
