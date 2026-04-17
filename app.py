@@ -437,6 +437,31 @@ def get_totp_token():
         log_yaz(f"TOTP oluşturma hatası: {type(e).__name__}")
         return None
 
+def _find_edit_control(parent_hwnd):
+    """Find the first visible Edit control inside a window using win32gui.
+    Returns the HWND of the edit control, or None if not found or win32gui unavailable.
+    """
+    try:
+        import win32gui
+        found = []
+
+        def _callback(hwnd, _):
+            try:
+                cls = win32gui.GetClassName(hwnd)
+                if cls.lower() == 'edit' and win32gui.IsWindowVisible(hwnd):
+                    found.append(hwnd)
+            except Exception:
+                pass
+            return True  # Always continue – avoids EnumChildWindows raising on False
+
+        win32gui.EnumChildWindows(parent_hwnd, _callback, None)
+        return found[0] if found else None
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
 def enter_token_in_pulse_window(pre_existing_hwnds=None):
     """Find Pulse Secure token window and enter TOTP.
     
@@ -450,12 +475,8 @@ def enter_token_in_pulse_window(pre_existing_hwnds=None):
     if pre_existing_hwnds is None:
         pre_existing_hwnds = set()
     
-    token = get_totp_token()
-    if not token:
-        log_yaz("HATA: TOTP token oluşturulamadı. Secret key kontrol edin.")
-        return False
-    
-    log_yaz("TOTP token üretildi.")
+    # NOTE: Token is generated AFTER the window is found (not here) so that a fresh
+    # token is used and avoids the 30-second wait causing the token to expire before typing.
     
     # Wait for a NEW Pulse window to appear (not one that was already open)
     max_wait = 30  # seconds
@@ -489,10 +510,8 @@ def enter_token_in_pulse_window(pre_existing_hwnds=None):
     log_yaz("Token penceresi bulundu. Token giriliyor...")
     
     try:
-        # Use win32gui for more reliable window activation
         import ctypes
         
-        # Get window handle
         hwnd = pulse_window._hWnd
         
         # Try multiple times to bring window to foreground
@@ -517,33 +536,78 @@ def enter_token_in_pulse_window(pre_existing_hwnds=None):
         else:
             log_yaz("UYARI: Pencere tam olarak aktif edilemedi, yine de devam ediliyor...")
         
-        # Additional wait to ensure window is ready
+        # Additional wait to ensure window is fully rendered/ready
         t.sleep(0.5)
         
-        # Click in the center of the window to ensure focus on the input field
-        # This helps ensure the token field is selected
-        try:
-            center_x = pulse_window.left + pulse_window.width // 2
-            center_y = pulse_window.top + pulse_window.height // 2
-            pyautogui.click(center_x, center_y)
-            t.sleep(0.3)
-            log_yaz("Token alanı seçildi")
-        except Exception as click_error:
-            log_yaz(f"UYARI: Token alanı tıklanamadı: {click_error}")
+        # Generate the TOTP token as late as possible (window is now visible) so it is fresh
+        token = get_totp_token()
+        if not token:
+            log_yaz("HATA: TOTP token oluşturulamadı. Secret key kontrol edin.")
+            return False
+        log_yaz("TOTP token üretildi.")
         
-        # Clear any existing content in the field (press Ctrl+A then Delete)
-        pyautogui.hotkey('ctrl', 'a')
-        t.sleep(0.1)
-        pyautogui.press('delete')
-        t.sleep(0.2)
+        # ------------------------------------------------------------------
+        # Method 1: win32gui — directly write to the Edit control (no focus
+        # or click needed, so duplicate-character race conditions cannot occur)
+        # ------------------------------------------------------------------
+        token_entered = False
+        edit_hwnd = _find_edit_control(hwnd)
+        if edit_hwnd is not None:
+            try:
+                import win32gui
+                import win32con
+                # Clear the field and set token text directly
+                win32gui.SendMessage(edit_hwnd, win32con.WM_SETTEXT, 0, "")
+                t.sleep(0.05)
+                win32gui.SendMessage(edit_hwnd, win32con.WM_SETTEXT, 0, token)
+                t.sleep(0.1)
+                log_yaz("Token win32 API ile girildi.")
+                # Submit the dialog with Enter
+                pyautogui.press('enter')
+                token_entered = True
+            except Exception as win32_err:
+                log_yaz(f"win32 ile token girme hatası: {type(win32_err).__name__}, pyautogui deneniyor.")
         
-        # Type the token with a longer interval for reliability
-        # Using typewrite with increased interval for more reliable input
-        pyautogui.typewrite(token, interval=0.1)
-        t.sleep(0.5)
-        
-        # Press Enter to submit
-        pyautogui.press('enter')
+        if not token_entered:
+            # ------------------------------------------------------------------
+            # Method 2: pyautogui fallback
+            # Root cause of duplicate characters: clicking the window centre can
+            # land on the OK button / a label instead of the text field, so
+            # ctrl+a / delete never clears the field and typewrite appends to
+            # existing content.  Fix: triple-click on the input area (upper-half
+            # of the lower portion of the window) to guarantee focus + select-all,
+            # then type cleanly with a safe interval.
+            # ------------------------------------------------------------------
+            try:
+                # Text input tends to sit in the upper ~60% of the dialog body
+                input_x = pulse_window.left + pulse_window.width // 2
+                input_y = pulse_window.top + int(pulse_window.height * 0.45)
+                # Triple-click selects all existing text regardless of field focus state
+                pyautogui.click(input_x, input_y)
+                t.sleep(0.15)
+                pyautogui.click(input_x, input_y)
+                t.sleep(0.15)
+                pyautogui.click(input_x, input_y)
+                t.sleep(0.2)
+                log_yaz("Token alanı seçildi (triple-click)")
+            except Exception as click_error:
+                log_yaz(f"UYARI: Token alanı tıklanamadı: {click_error}")
+            
+            # Ensure any selected text is deleted before typing
+            pyautogui.hotkey('ctrl', 'a')
+            t.sleep(0.1)
+            pyautogui.press('delete')
+            t.sleep(0.15)
+            # Second clear pass to cover edge cases where field was not focused above
+            pyautogui.hotkey('ctrl', 'a')
+            t.sleep(0.1)
+            pyautogui.press('backspace')
+            t.sleep(0.2)
+            
+            # Type the token with a safe per-character interval
+            pyautogui.typewrite(token, interval=0.15)
+            t.sleep(0.5)
+            pyautogui.press('enter')
         
         log_yaz("Token girildi ve gönderildi!")
         return True
