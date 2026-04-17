@@ -680,7 +680,37 @@ def monitor_loop():
                 save_history()
 
             is_connected = vpn_baglanti_kontrol_et(monitor_state["vpn_ip"])
-            
+
+            # If ping failed, try to detect the real VPN IP from network adapters first.
+            # This handles the case where the configured IP is stale/wrong but VPN is actually up.
+            if not is_connected:
+                detected_ip = detect_vpn_ip()
+                if detected_ip and detected_ip != monitor_state["vpn_ip"]:
+                    old_ip = monitor_state["vpn_ip"]
+                    monitor_state["vpn_ip"] = detected_ip
+                    log_yaz(f"Ping başarısız – adaptörde farklı VPN IP tespit edildi: {old_ip} -> {detected_ip}. Yeniden kontrol ediliyor...")
+                    is_connected = vpn_baglanti_kontrol_et(detected_ip)
+                    if is_connected:
+                        last_ip_check = time.time()
+                        try:
+                            save_result = save_config({
+                                "vpn_ip": detected_ip,
+                                "check_interval": monitor_state["check_interval"],
+                                "vpn_url": monitor_state["vpn_url"],
+                                "username": monitor_state["username"],
+                                "password": monitor_state["password"],
+                                "realm": monitor_state["realm"],
+                                "totp_secret": monitor_state["totp_secret"],
+                                "auto_connect": monitor_state["auto_connect"],
+                                "max_auto_retry": monitor_state["max_auto_retry"]
+                            })
+                            if save_result["success"]:
+                                log_yaz("VPN IP konfigürasyonda güncellendi")
+                            else:
+                                log_yaz("UYARI: VPN IP konfigürasyona kaydedilemedi")
+                        except Exception as e:
+                            log_yaz(f"VPN IP kaydetme hatası: {e}")
+
             # Periodically check if VPN IP has changed (when connected)
             if is_connected:
                 now = time.time()
