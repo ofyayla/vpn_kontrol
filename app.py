@@ -7,7 +7,6 @@ import os
 import sys
 import base64
 import ctypes
-import pandas as pd
 from flask import Flask, render_template, jsonify, send_file, request
 import io
 import signal
@@ -46,8 +45,13 @@ PULSE_LAUNCHER_PATH = r"C:\Program Files (x86)\Common Files\Pulse Secure\Integra
 try:
     _secure_storage = SecureStorage()
     print("Secure storage initialized with DPAPI + AES-GCM master key pattern")
+except ImportError as e:
+    print(f"ERROR: Secure storage requires 'cryptography' library. Please run: pip install cryptography")
+    print(f"Details: {e}")
+    _secure_storage = None
 except Exception as e:
     print(f"Warning: Could not initialize secure storage: {e}")
+    print(f"Secrets will not be persisted securely. Install dependencies: pip install -r requirements.txt")
     _secure_storage = None
 
 _fernet_cipher = None
@@ -127,7 +131,7 @@ def encrypt_sensitive_value(field_name, value):
         return ""
     
     if not _secure_storage:
-        raise RuntimeError("Secure storage not initialized")
+        raise RuntimeError("Secure storage not initialized. Install required libraries: pip install cryptography pywin32")
     
     try:
         # Store in secure storage (DPAPI + AES-GCM master key pattern)
@@ -137,7 +141,7 @@ def encrypt_sensitive_value(field_name, value):
         return f"secure_storage:{field_name}"
     except Exception as e:
         print(f"Error storing secret '{field_name}': {e}")
-        raise RuntimeError(f"Failed to encrypt {field_name}")
+        raise RuntimeError(f"Failed to encrypt {field_name}. Check if cryptography library is installed.")
 
 def decrypt_sensitive_value(field_name, value):
     """Decrypt sensitive value, handling both legacy and new formats"""
@@ -397,6 +401,22 @@ import pyotp
 import pyautogui
 import pygetwindow as gw
 
+def get_vpn_windows():
+    """Get list of currently open VPN client windows"""
+    vpn_titles = ["Ivanti Secure Access Client", "Pulse Secure", "Connect to:", "Secondary"]
+    found = []
+    for title in vpn_titles:
+        try:
+            windows = gw.getWindowsWithTitle(title)
+            found.extend(windows)
+        except Exception:
+            pass
+    return found
+
+def is_vpn_window_open():
+    """Check if any VPN client window is currently open"""
+    return len(get_vpn_windows()) > 0
+
 def get_totp_token():
     """Generate current TOTP token from secret"""
     secret = monitor_state.get("totp_secret", "")
@@ -417,18 +437,48 @@ def get_totp_token():
         log_yaz(f"TOTP oluşturma hatası: {type(e).__name__}")
         return None
 
-def enter_token_in_pulse_window():
-    """Find Pulse Secure token window and enter TOTP"""
+def _find_edit_control(parent_hwnd):
+    """Find the first visible Edit control inside a window using win32gui.
+    Returns the HWND of the edit control, or None if not found or win32gui unavailable.
+    """
+    try:
+        import win32gui
+        found = []
+
+        def _callback(hwnd, _):
+            try:
+                cls = win32gui.GetClassName(hwnd)
+                if cls.lower() == 'edit' and win32gui.IsWindowVisible(hwnd):
+                    found.append(hwnd)
+            except Exception:
+                pass
+            return True  # Always continue – avoids EnumChildWindows raising on False
+
+        win32gui.EnumChildWindows(parent_hwnd, _callback, None)
+        return found[0] if found else None
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def enter_token_in_pulse_window(pre_existing_hwnds=None):
+    """Find Pulse Secure token window and enter TOTP.
+    
+    Args:
+        pre_existing_hwnds: Set of window handles that existed before vpn_baglan was called.
+                           Only windows NOT in this set will be interacted with, to avoid
+                           interfering with windows the user opened manually.
+    """
     import time as t
     
-    token = get_totp_token()
-    if not token:
-        log_yaz("HATA: TOTP token oluşturulamadı. Secret key kontrol edin.")
-        return False
+    if pre_existing_hwnds is None:
+        pre_existing_hwnds = set()
     
-    log_yaz("TOTP token üretildi.")
+    # NOTE: Token is generated AFTER the window is found (not here) so that a fresh
+    # token is used and avoids the 30-second wait causing the token to expire before typing.
     
-    # Wait for the Pulse window to appear
+    # Wait for a NEW Pulse window to appear (not one that was already open)
     max_wait = 30  # seconds
     pulse_window = None
     
@@ -437,29 +487,31 @@ def enter_token_in_pulse_window():
         if i % 5 == 0:
             log_yaz(f"Token penceresi araniyor... ({i}/{max_wait}s)")
         # Look for Pulse Secure windows
-        windows = gw.getWindowsWithTitle("Ivanti Secure Access Client")
-        if not windows:
-            windows = gw.getWindowsWithTitle("Pulse Secure")
-        if not windows:
-            windows = gw.getWindowsWithTitle("Connect to:")
-        if not windows:
-            windows = gw.getWindowsWithTitle("Secondary")
+        all_windows = get_vpn_windows()
         
-        if windows:
-            pulse_window = windows[0]
+        # Filter out windows that existed before we launched pulselauncher
+        new_windows = [w for w in all_windows if w._hWnd not in pre_existing_hwnds]
+        
+        if new_windows:
+            pulse_window = new_windows[0]
+            break
+        elif all_windows and not pre_existing_hwnds:
+            # Fallback: if no pre-existing info was provided, use any window found
+            pulse_window = all_windows[0]
             break
     
     if not pulse_window:
-        log_yaz("HATA: Pulse Secure token penceresi bulunamadı.")
+        if pre_existing_hwnds and len(get_vpn_windows()) > 0:
+            log_yaz("Mevcut VPN penceresi kullanıcı tarafından açılmış. Token girişi atlanıyor.")
+        else:
+            log_yaz("HATA: Pulse Secure token penceresi bulunamadı.")
         return False
     
     log_yaz("Token penceresi bulundu. Token giriliyor...")
     
     try:
-        # Use win32gui for more reliable window activation
         import ctypes
         
-        # Get window handle
         hwnd = pulse_window._hWnd
         
         # Try multiple times to bring window to foreground
@@ -484,33 +536,78 @@ def enter_token_in_pulse_window():
         else:
             log_yaz("UYARI: Pencere tam olarak aktif edilemedi, yine de devam ediliyor...")
         
-        # Additional wait to ensure window is ready
+        # Additional wait to ensure window is fully rendered/ready
         t.sleep(0.5)
         
-        # Click in the center of the window to ensure focus on the input field
-        # This helps ensure the token field is selected
-        try:
-            center_x = pulse_window.left + pulse_window.width // 2
-            center_y = pulse_window.top + pulse_window.height // 2
-            pyautogui.click(center_x, center_y)
-            t.sleep(0.3)
-            log_yaz("Token alanı seçildi")
-        except Exception as click_error:
-            log_yaz(f"UYARI: Token alanı tıklanamadı: {click_error}")
+        # Generate the TOTP token as late as possible (window is now visible) so it is fresh
+        token = get_totp_token()
+        if not token:
+            log_yaz("HATA: TOTP token oluşturulamadı. Secret key kontrol edin.")
+            return False
+        log_yaz("TOTP token üretildi.")
         
-        # Clear any existing content in the field (press Ctrl+A then Delete)
-        pyautogui.hotkey('ctrl', 'a')
-        t.sleep(0.1)
-        pyautogui.press('delete')
-        t.sleep(0.2)
+        # ------------------------------------------------------------------
+        # Method 1: win32gui — directly write to the Edit control (no focus
+        # or click needed, so duplicate-character race conditions cannot occur)
+        # ------------------------------------------------------------------
+        token_entered = False
+        edit_hwnd = _find_edit_control(hwnd)
+        if edit_hwnd is not None:
+            try:
+                import win32gui
+                import win32con
+                # Clear the field and set token text directly
+                win32gui.SendMessage(edit_hwnd, win32con.WM_SETTEXT, 0, "")
+                t.sleep(0.05)
+                win32gui.SendMessage(edit_hwnd, win32con.WM_SETTEXT, 0, token)
+                t.sleep(0.1)
+                log_yaz("Token win32 API ile girildi.")
+                # Submit the dialog with Enter
+                pyautogui.press('enter')
+                token_entered = True
+            except Exception as win32_err:
+                log_yaz(f"win32 ile token girme hatası: {type(win32_err).__name__}, pyautogui deneniyor.")
         
-        # Type the token with a longer interval for reliability
-        # Using typewrite with increased interval for more reliable input
-        pyautogui.typewrite(token, interval=0.1)
-        t.sleep(0.5)
-        
-        # Press Enter to submit
-        pyautogui.press('enter')
+        if not token_entered:
+            # ------------------------------------------------------------------
+            # Method 2: pyautogui fallback
+            # Root cause of duplicate characters: clicking the window centre can
+            # land on the OK button / a label instead of the text field, so
+            # ctrl+a / delete never clears the field and typewrite appends to
+            # existing content.  Fix: triple-click on the input area (upper-half
+            # of the lower portion of the window) to guarantee focus + select-all,
+            # then type cleanly with a safe interval.
+            # ------------------------------------------------------------------
+            try:
+                # Text input tends to sit in the upper ~60% of the dialog body
+                input_x = pulse_window.left + pulse_window.width // 2
+                input_y = pulse_window.top + int(pulse_window.height * 0.45)
+                # Triple-click selects all existing text regardless of field focus state
+                pyautogui.click(input_x, input_y)
+                t.sleep(0.15)
+                pyautogui.click(input_x, input_y)
+                t.sleep(0.15)
+                pyautogui.click(input_x, input_y)
+                t.sleep(0.2)
+                log_yaz("Token alanı seçildi (triple-click)")
+            except Exception as click_error:
+                log_yaz(f"UYARI: Token alanı tıklanamadı: {click_error}")
+            
+            # Ensure any selected text is deleted before typing
+            pyautogui.hotkey('ctrl', 'a')
+            t.sleep(0.1)
+            pyautogui.press('delete')
+            t.sleep(0.15)
+            # Second clear pass to cover edge cases where field was not focused above
+            pyautogui.hotkey('ctrl', 'a')
+            t.sleep(0.1)
+            pyautogui.press('backspace')
+            t.sleep(0.2)
+            
+            # Type the token with a safe per-character interval
+            pyautogui.typewrite(token, interval=0.15)
+            t.sleep(0.5)
+            pyautogui.press('enter')
         
         log_yaz("Token girildi ve gönderildi!")
         return True
@@ -536,6 +633,14 @@ def vpn_baglan():
     log_yaz(f"Otomatik bağlantı deneniyor... ({url} / {realm})")
     
     try:
+        # Record existing VPN windows BEFORE launching pulselauncher
+        # so we can distinguish user-opened windows from newly created ones
+        pre_existing_windows = get_vpn_windows()
+        pre_existing_hwnds = {w._hWnd for w in pre_existing_windows}
+        
+        if pre_existing_hwnds:
+            log_yaz(f"Mevcut VPN penceresi tespit edildi ({len(pre_existing_hwnds)} adet). Yeni pencere beklenecek.")
+        
         # Use SecureString to minimize password exposure in memory
         with SecureString(pwd) as secure_pwd:
             args = [
@@ -554,8 +659,12 @@ def vpn_baglan():
         # If TOTP secret is configured, try to auto-enter token
         if monitor_state.get("totp_secret"):
             # Run token entry in a separate thread to not block
+            # Pass pre-existing window handles so the thread only interacts with NEW windows
             import threading
-            token_thread = threading.Thread(target=enter_token_in_pulse_window)
+            token_thread = threading.Thread(
+                target=enter_token_in_pulse_window,
+                args=(pre_existing_hwnds,)
+            )
             token_thread.daemon = True
             token_thread.start()
         
@@ -608,9 +717,17 @@ def monitor_loop():
     
     # Track current day to detect date changes
     current_day_str = datetime.now().strftime("%Y-%m-%d")
-    
+
+    # Wall-clock reference for accurate elapsed-time accounting
+    loop_start_time = time.time()
+
     while not _shutdown_flag.is_set():
         try:
+            # Measure actual time since last iteration (immune to VPN-check overhead)
+            now_time = time.time()
+            actual_elapsed = now_time - loop_start_time
+            loop_start_time = now_time
+
             # Check if day changed
             now_day_str = datetime.now().strftime("%Y-%m-%d")
             if now_day_str != current_day_str:
@@ -627,7 +744,37 @@ def monitor_loop():
                 save_history()
 
             is_connected = vpn_baglanti_kontrol_et(monitor_state["vpn_ip"])
-            
+
+            # If ping failed, try to detect the real VPN IP from network adapters first.
+            # This handles the case where the configured IP is stale/wrong but VPN is actually up.
+            if not is_connected:
+                detected_ip = detect_vpn_ip()
+                if detected_ip and detected_ip != monitor_state["vpn_ip"]:
+                    old_ip = monitor_state["vpn_ip"]
+                    monitor_state["vpn_ip"] = detected_ip
+                    log_yaz(f"Ping başarısız – adaptörde farklı VPN IP tespit edildi: {old_ip} -> {detected_ip}. Yeniden kontrol ediliyor...")
+                    is_connected = vpn_baglanti_kontrol_et(detected_ip)
+                    if is_connected:
+                        last_ip_check = time.time()
+                        try:
+                            save_result = save_config({
+                                "vpn_ip": detected_ip,
+                                "check_interval": monitor_state["check_interval"],
+                                "vpn_url": monitor_state["vpn_url"],
+                                "username": monitor_state["username"],
+                                "password": monitor_state["password"],
+                                "realm": monitor_state["realm"],
+                                "totp_secret": monitor_state["totp_secret"],
+                                "auto_connect": monitor_state["auto_connect"],
+                                "max_auto_retry": monitor_state["max_auto_retry"]
+                            })
+                            if save_result["success"]:
+                                log_yaz("VPN IP konfigürasyonda güncellendi")
+                            else:
+                                log_yaz("UYARI: VPN IP konfigürasyona kaydedilemedi")
+                        except Exception as e:
+                            log_yaz(f"VPN IP kaydetme hatası: {e}")
+
             # Periodically check if VPN IP has changed (when connected)
             if is_connected:
                 now = time.time()
@@ -683,13 +830,18 @@ def monitor_loop():
                     else:
                         now = time.time()
                         if now - last_connection_attempt > COOLDOWN_SECONDS:
-                            log_yaz(f"VPN Koptu. Otomatik bağlanılıyor... (Deneme {retry_count + 1}/{max_retries})")
-                            if vpn_baglan():
-                                last_connection_attempt = now
-                                monitor_state["auto_retry_count"] = retry_count + 1
+                            # Check if user already has VPN window open (manual connection attempt)
+                            if is_vpn_window_open():
+                                log_yaz("VPN penceresi zaten açık. Kullanıcı manuel bağlantı yapıyor olabilir, otomatik bağlantı atlanıyor.")
+                                last_connection_attempt = now  # Reset cooldown to avoid spamming this check
                             else:
-                                last_connection_attempt = now + 60 # Retry sooner if launch failed
-                                monitor_state["auto_retry_count"] = retry_count + 1
+                                log_yaz(f"VPN Koptu. Otomatik bağlanılıyor... (Deneme {retry_count + 1}/{max_retries})")
+                                if vpn_baglan():
+                                    last_connection_attempt = now
+                                    monitor_state["auto_retry_count"] = retry_count + 1
+                                else:
+                                    last_connection_attempt = now + 60 # Retry sooner if launch failed
+                                    monitor_state["auto_retry_count"] = retry_count + 1
                         else:
                             # In cooldown - log remaining time
                             remaining = int(COOLDOWN_SECONDS - (now - last_connection_attempt))
@@ -708,12 +860,11 @@ def monitor_loop():
                 last_connection_attempt = 0 # Reset cooldown on success
                 monitor_state["auto_retry_count"] = 0  # Reset retry counter on successful connection
                 
-                # Stats update
+                # Stats update — use real elapsed seconds, not the nominal check_interval,
+                # so overhead from the VPN check call doesn't cause undercounting.
                 now = datetime.now()
-                # Stats update
-                now = datetime.now()
-                monitor_state["hourly_stats"][now.hour] = monitor_state["hourly_stats"].get(now.hour, 0) + monitor_state["check_interval"]
-                monitor_state["real_vpn_seconds"] += monitor_state["check_interval"]
+                monitor_state["hourly_stats"][now.hour] = monitor_state["hourly_stats"].get(now.hour, 0) + actual_elapsed
+                monitor_state["real_vpn_seconds"] += actual_elapsed
                 
                 # Update effective total based on location
                 if monitor_state["location"] == "office":
@@ -914,6 +1065,72 @@ def api_detect_ip():
         log_yaz(f"VPN IP algılama hatası: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/check_dependencies')
+def api_check_dependencies():
+    """Check if all required dependencies are installed"""
+    missing_deps = []
+    warnings = []
+    
+    # Check critical dependencies
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError:
+        missing_deps.append({
+            "name": "cryptography",
+            "install": "pip install cryptography>=41.0.0",
+            "severity": "critical",
+            "message": "Secure storage will NOT work without this library. Credentials cannot be saved."
+        })
+    
+    try:
+        import pyotp
+    except ImportError:
+        missing_deps.append({
+            "name": "pyotp",
+            "install": "pip install pyotp>=2.9.0",
+            "severity": "critical",
+            "message": "TOTP token generation will not work."
+        })
+    
+    # Check recommended dependencies
+    if sys.platform == "win32":
+        try:
+            import win32security
+        except ImportError:
+            warnings.append({
+                "name": "pywin32",
+                "install": "pip install pywin32>=306",
+                "severity": "warning",
+                "message": "Windows ACLs and Credential Manager features will be limited."
+            })
+    
+    try:
+        import pyautogui
+    except ImportError:
+        warnings.append({
+            "name": "pyautogui",
+            "install": "pip install pyautogui>=0.9.54",
+            "severity": "warning",
+            "message": "Auto-token entry will not work."
+        })
+    
+    # Check if secure storage is initialized
+    if not _secure_storage:
+        if not any(d["name"] == "cryptography" for d in missing_deps):
+            warnings.append({
+                "name": "secure_storage",
+                "install": "Check LOCALAPPDATA environment variable",
+                "severity": "warning",
+                "message": "Secure storage is not initialized. Credentials may not persist."
+            })
+    
+    return jsonify({
+        "status": "ok" if not missing_deps else "error",
+        "missing": missing_deps,
+        "warnings": warnings,
+        "has_critical_issues": len(missing_deps) > 0
+    })
+
 @app.route('/api/history')
 def api_history():
     history_data = []
@@ -1012,6 +1229,7 @@ def api_history_detail(date_str):
 @app.route('/api/export')
 def api_export():
     try:
+        import pandas as pd
         data = read_json_safe()
         if not data:
              return jsonify({"error": "No data found"}), 404
@@ -1188,7 +1406,10 @@ def decode_qr():
                 "message": f"TOTP Secret kaydedildi! Artık token otomatik girilecek."
             }
             if save_result["warnings"]:
-                response_payload["warning"] = "TOTP secret dosyaya güvenli olarak yazılamadı. Uygulama kapanınca tekrar girmeniz gerekir."
+                warning_msg = "TOTP secret dosyaya güvenli olarak yazılamadı. Uygulama kapanınca tekrar girmeniz gerekir."
+                if "cryptography" in str(save_result["warnings"]).lower():
+                    warning_msg += " Eksik kütüphane: pip install cryptography pywin32"
+                response_payload["warning"] = warning_msg
             return jsonify(response_payload)
         
         # Check if it's a standard otpauth URL
@@ -1220,7 +1441,10 @@ def decode_qr():
                 "message": "TOTP Secret kaydedildi! Artık token otomatik girilecek."
             }
             if save_result["warnings"]:
-                response_payload["warning"] = "TOTP secret dosyaya güvenli olarak yazılamadı. Uygulama kapanınca tekrar girmeniz gerekir."
+                warning_msg = "TOTP secret dosyaya güvenli olarak yazılamadı. Uygulama kapanınca tekrar girmeniz gerekir."
+                if "cryptography" in str(save_result["warnings"]).lower():
+                    warning_msg += " Eksik kütüphane: pip install cryptography pywin32"
+                response_payload["warning"] = warning_msg
             return jsonify(response_payload)
         
         else:

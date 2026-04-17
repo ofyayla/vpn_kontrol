@@ -29,7 +29,7 @@ A secure VPN monitoring and auto-reconnect application with **enterprise-grade c
 
 1. **Clone or download this repository**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/ofyayla/vpn_kontrol.git
    cd vpn_kontrol
    ```
 
@@ -38,12 +38,17 @@ A secure VPN monitoring and auto-reconnect application with **enterprise-grade c
    pip install -r requirements.txt
    ```
 
-3. **Run the application**
+3. **Verify installation (recommended)**
+   ```bash
+   python check_dependencies.py
+   ```
+
+4. **Run the application**
    ```bash
    python app.py
    ```
 
-4. **Open web interface**
+5. **Open web interface**
    - Navigate to: http://127.0.0.1:5000
    - Configure your VPN settings
    - Enter credentials (will be encrypted automatically)
@@ -296,12 +301,31 @@ if WindowsCredentialManager.is_available():
 
 ### Common Issues
 
+**Issue:** "TOTP secret dosyaya güvenli olarak yazılamadı" / Secure storage warning
+```bash
+# This error means the cryptography library is not installed
+# Solution:
+pip install cryptography
+
+# Or install all dependencies:
+pip install -r requirements.txt
+
+# Verify installation:
+python check_dependencies.py
+
+# Check if cryptography is installed:
+python -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM; print('✓ cryptography OK')"
+```
+
 **Issue:** "Secure storage not initialized"
 ```bash
 # Check LOCALAPPDATA is set
 echo $env:LOCALAPPDATA
 
 # Should output: C:\Users\YourName\AppData\Local
+
+# Run dependency check:
+python check_dependencies.py
 ```
 
 **Issue:** "Could not set file ACLs"

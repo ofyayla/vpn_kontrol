@@ -4,8 +4,8 @@ cd /d "%~dp0"
 REM Read python executable from config.json (default: python)
 set PYTHON_CMD=python
 if exist config.json (
-    for /f "tokens=2 delims=:, " %%a in ('findstr /c:"python_executable" config.json') do (
-        set PYTHON_CMD=%%~a
+    for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).python_executable"`) do (
+        set PYTHON_CMD=%%a
     )
 )
 

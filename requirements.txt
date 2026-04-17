@@ -1,0 +1,22 @@
+# VPN Kontrol - Python Dependencies
+
+## Core Security Requirements
+cryptography>=41.0.0           # AES-GCM authenticated encryption
+pywin32>=306; sys_platform == "win32"  # Windows ACLs and Credential Manager (optional but recommended)
+
+## Web Framework
+Flask>=2.3.0
+
+## Data Processing
+pandas>=2.0.0
+
+## VPN & Authentication
+pyotp>=2.9.0                   # TOTP token generation
+
+## GUI Automation (for token entry)
+pyautogui>=0.9.54
+pygetwindow>=0.0.9
+
+## QR Code Scanning
+opencv-python>=4.8.0
+numpy>=1.24.0

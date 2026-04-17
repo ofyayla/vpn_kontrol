@@ -3,3 +3,4 @@ config.json
 *.json
 !config.example.json
 /__pycache__
+!requirements.txt

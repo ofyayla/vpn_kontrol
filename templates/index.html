@@ -892,10 +892,163 @@
             color: var(--primary);
             font-weight: 600;
         }
+
+        /* ==================== NOTIFICATION BANNER ==================== */
+        .notification-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 9999;
+            transform: translateY(-100%);
+            transition: transform 0.3s ease-in-out;
+        }
+
+        .notification-banner.show {
+            transform: translateY(0);
+        }
+
+        .notification-content {
+            padding: 16px 20px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .notification-banner.critical .notification-content {
+            background: linear-gradient(135deg, #dc2626, #b91c1c);
+            color: white;
+        }
+
+        .notification-banner.warning .notification-content {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+        }
+
+        .notification-icon {
+            font-size: 1.5rem;
+            flex-shrink: 0;
+            animation: pulse 2s infinite;
+        }
+
+        .notification-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .notification-title {
+            font-weight: 600;
+            font-size: 1rem;
+            margin: 0 0 8px 0;
+        }
+
+        .notification-message {
+            font-size: 0.9rem;
+            margin: 0 0 8px 0;
+            opacity: 0.95;
+        }
+
+        .notification-list {
+            list-style: none;
+            padding: 0;
+            margin: 8px 0 0 0;
+            font-size: 0.85rem;
+        }
+
+        .notification-list li {
+            padding: 6px 0;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .notification-list li:first-child {
+            border-top: none;
+        }
+
+        .notification-dep-name {
+            font-weight: 600;
+        }
+
+        .notification-dep-install {
+            font-family: 'Courier New', monospace;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            word-break: break-all;
+        }
+
+        .notification-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .notification-btn {
+            padding: 6px 14px;
+            border: 2px solid white;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .notification-btn:hover {
+            background: white;
+            color: var(--danger);
+        }
+
+        .notification-banner.warning .notification-btn:hover {
+            color: var(--warning);
+        }
+
+        .notification-close {
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            font-size: 1.5rem;
+            padding: 0;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            flex-shrink: 0;
+            transition: background 0.2s;
+        }
+
+        .notification-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
     </style>
 </head>
 
 <body>
+    <!-- Dependency Check Notification Banner -->
+    <div id="dependencyNotification" class="notification-banner">
+        <div class="notification-content">
+            <div class="notification-icon">⚠️</div>
+            <div class="notification-body">
+                <h3 class="notification-title" id="notificationTitle">Eksik Kütüphaneler Tespit Edildi</h3>
+                <p class="notification-message" id="notificationMessage"></p>
+                <ul class="notification-list" id="notificationList"></ul>
+                <div class="notification-actions">
+                    <button class="notification-btn" onclick="copyInstallCommand()">📋 Komutu Kopyala</button>
+                    <button class="notification-btn" onclick="window.open('https://github.com/ofyayla/vpn_kontrol#troubleshooting', '_blank')">📚 Yardım</button>
+                </div>
+            </div>
+            <button class="notification-close" onclick="dismissNotification()">&times;</button>
+        </div>
+    </div>
+
     <div class="main-layout">
         <!-- Left Column -->
         <div class="left-column">
@@ -1686,6 +1839,110 @@
                 })
                 .catch(err => alert('Değişiklik kaydedilemedi: ' + err));
         }
+
+        // ==================== DEPENDENCY CHECK ====================
+        let installCommands = [];
+
+        function checkDependencies() {
+            fetch('/api/check_dependencies')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.has_critical_issues || data.warnings.length > 0) {
+                        showDependencyNotification(data);
+                    }
+                })
+                .catch(err => {
+                    console.error('Dependency check failed:', err);
+                });
+        }
+
+        function showDependencyNotification(data) {
+            const banner = document.getElementById('dependencyNotification');
+            const title = document.getElementById('notificationTitle');
+            const message = document.getElementById('notificationMessage');
+            const list = document.getElementById('notificationList');
+
+            // Determine severity
+            const isCritical = data.has_critical_issues;
+            banner.className = `notification-banner ${isCritical ? 'critical' : 'warning'}`;
+
+            // Set title and message
+            if (isCritical) {
+                title.textContent = '⚠️ Kritik: Eksik Kütüphaneler Tespit Edildi';
+                message.textContent = 'Uygulama düzgün çalışmayabilir. Aşağıdaki kütüphaneleri yükleyin:';
+            } else {
+                title.textContent = 'ℹ️ Bazı Özellikler Kullanılamayabilir';
+                message.textContent = 'Tam işlevsellik için aşağıdaki kütüphaneleri yüklemeniz önerilir:';
+            }
+
+            // Build list of missing dependencies
+            const issues = [...data.missing, ...data.warnings];
+            installCommands = issues.map(dep => dep.install);
+
+            list.innerHTML = '';
+            issues.forEach(dep => {
+                const li = document.createElement('li');
+                li.innerHTML = `
+                    <div class="notification-dep-name">${dep.name}</div>
+                    <div>${dep.message}</div>
+                    <div class="notification-dep-install">${dep.install}</div>
+                `;
+                list.appendChild(li);
+            });
+
+            // Show banner
+            setTimeout(() => banner.classList.add('show'), 100);
+        }
+
+        function dismissNotification() {
+            const banner = document.getElementById('dependencyNotification');
+            banner.classList.remove('show');
+        }
+
+        function copyInstallCommand() {
+            // Combine all install commands or use pip install -r requirements.txt
+            const command = 'pip install -r requirements.txt';
+            
+            // Try to copy to clipboard
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(command)
+                    .then(() => {
+                        // Show feedback
+                        const btn = event.target;
+                        const originalText = btn.textContent;
+                        btn.textContent = '✅ Kopyalandı!';
+                        setTimeout(() => {
+                            btn.textContent = originalText;
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        alert('Kopyalama başarısız. Komutu manuel kopyalayın:\n\n' + command);
+                    });
+            } else {
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = command;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    const btn = event.target;
+                    const originalText = btn.textContent;
+                    btn.textContent = '✅ Kopyalandı!';
+                    setTimeout(() => {
+                        btn.textContent = originalText;
+                    }, 2000);
+                } catch (err) {
+                    alert('Kopyalama başarısız. Komutu manuel kopyalayın:\n\n' + command);
+                }
+                document.body.removeChild(textarea);
+            }
+        }
+
+        // Check dependencies on page load
+        checkDependencies();
 
         startRefreshLoop();
     </script>
